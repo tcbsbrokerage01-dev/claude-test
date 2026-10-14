@@ -1,0 +1,1177 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wavefield</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="黑底白色點陣的即時音頻可視化：內建合成示範音軌、上傳音檔或麥克風，四種顯示模式。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&family=Noto+Sans+TC:wght@400;500&display=swap">
+<style>
+/* Layout: the phosphor field is the instrument face. Full-bleed canvas, a thin HUD strip on top,
+   a front-panel dock with a readout baseline at the bottom. Single committed dark look, monochrome. */
+:root {
+  --void: #040506;
+  --phosphor: #eef2f3;
+  --dim: #8b9498;
+  --faint: #2b3134;
+  --rule: rgba(238, 242, 243, 0.16);
+  --rule-strong: rgba(238, 242, 243, 0.42);
+  --panel: rgba(4, 5, 6, 0.8);
+  --scan: rgba(238, 242, 243, 0.025);
+  --vignette: rgba(0, 0, 0, 0.62);
+  --font-hud: "Martian Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-text: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --fs-xs: 10px;
+  --fs-s: 11px;
+  --fs-m: 12px;
+  --fs-l: 15px;
+  color-scheme: dark;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--void);
+  color: var(--phosphor);
+  font: 400 var(--fs-m)/1.5 var(--font-text);
+  -webkit-font-smoothing: antialiased;
+}
+[hidden] { display: none !important; }
+
+#field { position: fixed; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
+.fx {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none;
+  background:
+    repeating-linear-gradient(to bottom, var(--scan) 0 1px, transparent 1px 3px),
+    radial-gradient(130% 95% at 50% 45%, transparent 58%, var(--vignette) 100%);
+}
+
+.app {
+  position: relative; z-index: 2;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+/* ---------- top HUD ---------- */
+.top {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 10px 16px;
+  padding-block: 14px 6px;
+}
+.brand { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; min-width: 0; }
+.mark {
+  margin: 0;
+  font: 600 var(--fs-l)/1 var(--font-hud);
+  font-stretch: 112.5%;
+  letter-spacing: 0.34em;
+}
+.sub { color: var(--dim); letter-spacing: 0.06em; }
+.status {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  font: 500 var(--fs-xs)/1 var(--font-hud);
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  max-width: min(52vw, 340px);
+  padding: 6px 10px;
+  border: 1px solid var(--rule);
+  color: var(--phosphor);
+}
+.chip b { font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chip i { flex: none; width: 6px; height: 6px; background: var(--dim); }
+.chip.live i { background: var(--phosphor); animation: blink 1.1s steps(2, jump-none) infinite; }
+@keyframes blink { 50% { opacity: 0.15; } }
+.icon-btn {
+  appearance: none; display: inline-grid; place-items: center;
+  width: 28px; height: 28px; padding: 0;
+  border: 1px solid var(--rule); border-radius: 0;
+  background: transparent; color: var(--phosphor); cursor: pointer;
+}
+.icon-btn svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.2; }
+.icon-btn:hover { border-color: var(--rule-strong); }
+
+/* ---------- stage ---------- */
+.stage { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; }
+.cap {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px;
+  padding-block: 6px 8px;
+  font: 500 var(--fs-xs)/1.5 var(--font-hud);
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+.cap-mode { color: var(--phosphor); }
+.cap-axis { font-family: var(--font-text); font-size: var(--fs-s); letter-spacing: 0.04em; }
+.cap-scale { margin-left: auto; font-variant-numeric: tabular-nums; }
+.plot { position: relative; min-height: 0; }
+.c { position: absolute; width: 12px; height: 12px; border: 0 solid var(--rule-strong); }
+.c.tl { top: 0; left: 0; border-top-width: 1px; border-left-width: 1px; }
+.c.tr { top: 0; right: 0; border-top-width: 1px; border-right-width: 1px; }
+.c.bl { bottom: 0; left: 0; border-bottom-width: 1px; border-left-width: 1px; }
+.c.br { bottom: 0; right: 0; border-bottom-width: 1px; border-right-width: 1px; }
+.hint {
+  position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+  width: max-content; max-width: calc(100% - 32px);
+  margin: 0; padding: 8px 14px;
+  border: 1px solid var(--rule);
+  background: var(--panel);
+  text-align: center; text-wrap: balance;
+}
+.hint b { font: 500 var(--fs-s) var(--font-hud); letter-spacing: 0.12em; }
+
+/* ---------- dock ---------- */
+.dock { display: grid; gap: 10px; min-width: 0; padding-block: 10px 14px; }
+.controls {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 10px 22px;
+}
+.group { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.modes { justify-content: center; }
+.btn, .tab {
+  appearance: none;
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 34px; padding: 0 12px;
+  border: 1px solid var(--rule); border-radius: 0;
+  background: transparent; color: var(--phosphor);
+  font: 500 var(--fs-s)/1 var(--font-hud);
+  letter-spacing: 0.14em;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+}
+.btn:hover, .tab:hover { border-color: var(--rule-strong); }
+.btn .zh { font: 400 var(--fs-m)/1 var(--font-text); letter-spacing: 0.04em; color: var(--dim); }
+.tab .k { color: var(--dim); }
+.btn[aria-pressed="true"], .tab[aria-pressed="true"] {
+  background: var(--phosphor); border-color: var(--phosphor); color: var(--void);
+}
+.btn[aria-pressed="true"] .zh, .tab[aria-pressed="true"] .k { color: var(--void); }
+.play { width: 34px; padding: 0; justify-content: center; }
+.play svg { width: 12px; height: 12px; fill: currentColor; }
+.play .i-pause, .play.is-playing .i-play { display: none; }
+.play.is-playing .i-pause { display: inline; }
+:focus-visible { outline: 1px solid var(--phosphor); outline-offset: 3px; }
+
+.knobs { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.knob {
+  display: flex; align-items: center; gap: 8px;
+  font: 500 var(--fs-xs)/1 var(--font-hud);
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+.knob output { min-width: 5ch; text-align: right; color: var(--phosphor); font-variant-numeric: tabular-nums; }
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 110px; height: 22px; margin: 0;
+  background: transparent; cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track { height: 1px; background: var(--rule-strong); }
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 9px; height: 15px; margin-top: -7px;
+  border: 0; border-radius: 0; background: var(--phosphor);
+}
+input[type="range"]::-moz-range-track { height: 1px; background: var(--rule-strong); }
+input[type="range"]::-moz-range-thumb { width: 9px; height: 15px; border: 0; border-radius: 0; background: var(--phosphor); }
+
+.readout {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px;
+  padding-top: 9px;
+  border-top: 1px solid var(--rule);
+  font: 500 var(--fs-xs)/1.3 var(--font-hud);
+  letter-spacing: 0.1em;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.readout em { font-style: normal; margin-right: 7px; }
+.readout b { font-weight: 500; color: var(--phosphor); }
+.beat { display: inline-block; width: 7px; height: 7px; margin-left: 7px; border: 1px solid var(--rule-strong); vertical-align: -1px; }
+.beat.on { background: var(--phosphor); border-color: var(--phosphor); }
+.meters { display: inline-flex; align-items: center; gap: 10px; }
+.meter { display: inline-flex; align-items: center; gap: 5px; }
+.track { display: block; width: 44px; height: 5px; overflow: hidden; background: var(--faint); }
+.track i { display: block; height: 100%; background: var(--phosphor); transform-origin: left; transform: scaleX(0); }
+.keys { margin-left: auto; font-family: var(--font-text); letter-spacing: 0.04em; font-size: var(--fs-s); }
+
+/* ---------- overlays ---------- */
+.drop {
+  position: fixed; z-index: 5;
+  inset: calc(env(safe-area-inset-top, 0px) + 12px) max(12px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 12px) max(12px, env(safe-area-inset-left, 0px));
+  display: grid; place-items: center;
+  border: 1px dashed var(--phosphor);
+  background: var(--panel);
+  font: 500 var(--fs-l)/1.4 var(--font-text);
+  letter-spacing: 0.2em;
+}
+.toast {
+  position: fixed; z-index: 6;
+  top: calc(env(safe-area-inset-top, 0px) + 64px); left: 50%; transform: translateX(-50%);
+  width: max-content; max-width: calc(100% - 32px);
+  padding: 10px 14px;
+  background: var(--phosphor); color: var(--void);
+  font: 500 var(--fs-m)/1.55 var(--font-text);
+}
+
+@media (max-width: 1020px) {
+  .controls { grid-template-columns: minmax(0, 1fr); }
+  .modes { justify-content: flex-start; }
+}
+@media (max-width: 640px) {
+  .sub, #fps { display: none; }
+  .status { gap: 8px 12px; }
+  .modes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .tab { justify-content: center; padding: 0 4px; font-size: var(--fs-xs); letter-spacing: 0.04em; }
+  .tab .k { display: none; }
+  .cap-scale { margin-left: 0; }
+  .keys { display: none; }
+  input[type="range"] { width: 92px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chip.live i { animation: none; }
+  .btn, .tab { transition: none; }
+}
+</style>
+</head>
+<body>
+<canvas id="field" role="img" aria-label="音頻可視化畫面：白色點陣隨聲音即時變化"></canvas>
+<div class="fx" aria-hidden="true"></div>
+
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <h1 class="mark">WAVEFIELD</h1>
+      <span class="sub">音場 · 即時音頻可視化</span>
+    </div>
+    <div class="status">
+      <span class="chip" id="chip"><i aria-hidden="true"></i><b id="chipText">PREVIEW · 模擬訊號</b></span>
+      <span id="tc">T+00:00.00</span>
+      <span id="fps">— FPS</span>
+      <button class="icon-btn" id="btn-fs" type="button" aria-label="全螢幕"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 4.5V1h3.5M7.5 1H11v3.5M11 7.5V11H7.5M4.5 11H1V7.5"/></svg></button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div class="cap">
+      <span class="cap-mode" id="capMode">01 / WAVEFIELD</span>
+      <span class="cap-axis" id="capAxis"></span>
+      <span class="cap-scale" id="capScale"></span>
+    </div>
+    <div class="plot" id="plot">
+      <span class="c tl"></span><span class="c tr"></span><span class="c bl"></span><span class="c br"></span>
+      <p class="hint" id="hint">現在是模擬訊號預覽。按 <b>DEMO</b> 聽內建合成音軌，或把音檔拖進畫面。</p>
+    </div>
+  </main>
+
+  <footer class="dock">
+    <div class="controls">
+      <div class="group" role="group" aria-label="音源">
+        <button class="btn" id="btn-demo" type="button" aria-pressed="false"><span>DEMO</span><span class="zh">示範</span></button>
+        <button class="btn" id="btn-file" type="button" aria-pressed="false"><span>FILE</span><span class="zh">音檔</span></button>
+        <button class="btn" id="btn-mic" type="button" aria-pressed="false"><span>MIC</span><span class="zh">麥克風</span></button>
+        <button class="btn play is-playing" id="btn-play" type="button" aria-label="暫停">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path class="i-play" d="M3 1.5 10.5 6 3 10.5z"/><path class="i-pause" d="M2.5 1.5h2.6v9H2.5zM6.9 1.5h2.6v9H6.9z"/></svg>
+        </button>
+      </div>
+      <div class="group modes" role="group" aria-label="可視化模式">
+        <button class="tab" id="mode-1" type="button" aria-pressed="true"><span class="k">1</span>WAVEFIELD</button>
+        <button class="tab" id="mode-2" type="button" aria-pressed="false"><span class="k">2</span>SPECTRUM</button>
+        <button class="tab" id="mode-3" type="button" aria-pressed="false"><span class="k">3</span>SCOPE</button>
+        <button class="tab" id="mode-4" type="button" aria-pressed="false"><span class="k">4</span>RADIAL</button>
+      </div>
+      <div class="knobs">
+        <label class="knob" for="gain">GAIN<input type="range" id="gain" min="0.4" max="2.5" step="0.05" value="1"><output id="gainOut" for="gain">1.00×</output></label>
+        <label class="knob" for="trail">TRAIL<input type="range" id="trail" min="0" max="0.85" step="0.01" value="0.3"><output id="trailOut" for="trail">30%</output></label>
+      </div>
+    </div>
+    <div class="readout" aria-label="即時量測">
+      <span><em>SRC</em><b id="rSrc">SIM</b></span>
+      <span><em>FFT</em><b>2048</b></span>
+      <span><em>SR</em><b id="rSr">SIM</b></span>
+      <span><em>RMS</em><b id="rRms">—</b></span>
+      <span><em>PEAK</em><b id="rPeak">—</b></span>
+      <span><em>CENTROID</em><b id="rCent">—</b></span>
+      <span><em>BPM≈</em><b id="rBpm">—</b><i class="beat" id="beat" aria-hidden="true"></i></span>
+      <span class="meters" aria-hidden="true">
+        <span class="meter">L<span class="track"><i id="mL"></i></span></span>
+        <span class="meter">M<span class="track"><i id="mM"></i></span></span>
+        <span class="meter">H<span class="track"><i id="mH"></i></span></span>
+      </span>
+      <span class="keys">空白鍵 播放/暫停 · 1–4 切換模式 · F 全螢幕</span>
+    </div>
+  </footer>
+</div>
+
+<div class="drop" id="drop" hidden><span>放開以載入音檔</span></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<input type="file" id="file" accept="audio/*" hidden>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (s) => document.querySelector(s);
+  const canvas = $('#field');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const plotEl = $('#plot');
+
+  const rootStyle = getComputedStyle(document.documentElement);
+  const tok = (name, fallback) => rootStyle.getPropertyValue(name).trim() || fallback;
+  const COLOR = { void: tok('--void', '#040506'), ph: tok('--phosphor', '#eef2f3'), dim: tok('--dim', '#8b9498') };
+  const AXIS_FONT = '500 10px "Martian Mono", ui-monospace, Menlo, Consolas, monospace';
+
+  const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let reduceMotion = motionQuery.matches;
+  if (motionQuery.addEventListener) motionQuery.addEventListener('change', (e) => { reduceMotion = e.matches; });
+
+  const FFT = 2048;
+  const BINS = FFT / 2;
+  const COL_RATE = 60;      // wavefield columns per second
+  const MAXC = 2048;        // wavefield history length
+  const AXIS_H = 22;        // room for axis labels under the field
+  const F_MIN = 30;
+  const MIN_DB = -96;
+  const MAX_DB = -16;
+  const SCOPE_K = 2.2;      // full-scale multiplier for scope / inner ring
+
+  const MODES = [
+    { name: 'WAVEFIELD', axis: '橫軸 時間（最右為現在）· 縱軸 能量：上半偏中高頻、下半偏低頻' },
+    { name: 'SPECTRUM', axis: '橫軸 頻率（對數）· 縱軸 強度 · 頂端亮點為峰值保持' },
+    { name: 'SCOPE', axis: '示波器 · 零交越觸發 · 橫軸 時間、縱軸 振幅' },
+    { name: 'RADIAL', axis: '環狀頻譜 · 上方低頻、下方高頻 · 內圈為即時波形' },
+  ];
+  const SRC_LABEL = { sim: 'SIM', demo: 'DEMO', file: 'FILE', mic: 'MIC' };
+  const MIC_BLOCKED = '麥克風無法使用：權限被拒絕，或目前的預覽環境封鎖了麥克風。把 index.html 放在 https 或 localhost 上開啟即可；現在可以先用 DEMO 或 FILE。';
+
+  const state = { mode: 0, gain: 1, trail: 0.3, src: 'sim', playing: true, t0: 0, fileName: '' };
+  const freq = new Uint8Array(BINS);
+  const wave = new Float32Array(FFT);
+  let feat = { rms: 0, db: -Infinity, lo: 0, mid: 0, hi: 0, peakHz: 0, centroid: 0 };
+  let simT = 0;
+
+  const el = {
+    fps: $('#fps'), tc: $('#tc'), chip: $('#chip'), chipText: $('#chipText'),
+    src: $('#rSrc'), sr: $('#rSr'), rms: $('#rRms'), peak: $('#rPeak'), cent: $('#rCent'), bpm: $('#rBpm'),
+    beat: $('#beat'), mL: $('#mL'), mM: $('#mM'), mH: $('#mH'),
+    capMode: $('#capMode'), capAxis: $('#capAxis'), capScale: $('#capScale'),
+    play: $('#btn-play'), hint: $('#hint'), drop: $('#drop'), toast: $('#toast'),
+    gain: $('#gain'), gainOut: $('#gainOut'), trail: $('#trail'), trailOut: $('#trailOut'), file: $('#file'),
+  };
+  const tabs = Array.from(document.querySelectorAll('.tab'));
+
+  /* ---------------- dot batching ----------------
+     Every dot is bucketed by alpha; each bucket is one path + one fill. */
+  const LEVELS = 10;
+  const buckets = Array.from({ length: LEVELS }, () => ({ n: 0, d: new Float32Array(16384) }));
+  function dot(x, y, w, h, a) {
+    if (a < 0.04) return;
+    const b = buckets[a >= 1 ? LEVELS - 1 : (a * LEVELS) | 0];
+    const o = b.n * 4;
+    if (o + 4 > b.d.length) {
+      if (b.d.length >= 1 << 22) return;
+      const grown = new Float32Array(b.d.length * 2);
+      grown.set(b.d);
+      b.d = grown;
+    }
+    b.d[o] = x; b.d[o + 1] = y; b.d[o + 2] = w; b.d[o + 3] = h;
+    b.n++;
+  }
+  function flush() {
+    ctx.fillStyle = COLOR.ph;
+    for (let l = 0; l < LEVELS; l++) {
+      const b = buckets[l];
+      if (!b.n) continue;
+      ctx.globalAlpha = (l + 0.6) / LEVELS;
+      ctx.beginPath();
+      const d = b.d;
+      for (let i = 0, o = 0; i < b.n; i++, o += 4) ctx.rect(d[o], d[o + 1], d[o + 2], d[o + 3]);
+      ctx.fill();
+      b.n = 0;
+    }
+    ctx.globalAlpha = 1;
+  }
+  // A bar is drawn as five solid segments with falling alpha; the row mask then cuts it into dots.
+  const SEG = [0, 0.4, 0.6, 0.75, 0.87, 1];
+  function bar(x, y0, h, dir, w, bright) {
+    if (h <= 0) return;
+    for (let s = 0; s < 5; s++) {
+      const m = (SEG[s] + SEG[s + 1]) / 2;
+      const ya = y0 + dir * SEG[s] * h, yb = y0 + dir * SEG[s + 1] * h;
+      dot(x, Math.min(ya, yb), w, Math.abs(yb - ya), bright * (1 - 0.72 * m * m));
+    }
+  }
+  // Repeating pattern in device pixels: one lit row, then background rows.
+  let rowMask = null, pitch = 3;
+  function buildMask() {
+    const P = Math.max(2, Math.round(3 * DPR)), on = Math.max(1, Math.round(1.1 * DPR));
+    const c = document.createElement('canvas');
+    c.width = 1;
+    c.height = P;
+    const g = c.getContext('2d');
+    g.fillStyle = COLOR.void;
+    g.fillRect(0, on, 1, P - on);
+    rowMask = ctx.createPattern(c, 'repeat');
+    if (rowMask && rowMask.setTransform && window.DOMMatrix) {
+      rowMask.setTransform(new DOMMatrix([1 / DPR, 0, 0, 1 / DPR, 0, 0]));
+      pitch = P / DPR;
+    } else {
+      pitch = P; // pattern scaled by the context transform
+    }
+  }
+  const snap = (y) => Math.round(y / pitch) * pitch;
+  function applyMask(top, bottom) {
+    if (!rowMask) return;
+    ctx.fillStyle = rowMask;
+    ctx.fillRect(plot.x, top, plot.w, bottom - top);
+  }
+  function label(text, x, y, align) {
+    ctx.fillStyle = COLOR.dim;
+    ctx.font = AXIS_FONT;
+    ctx.textAlign = align || 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(text, x, y);
+  }
+
+  /* ---------------- sizing ---------------- */
+  let W = 0, H = 0, DPR = 1;
+  const plot = { x: 0, y: 0, w: 0, h: 0 };
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.max(1, Math.round(W * DPR));
+    canvas.height = Math.max(1, Math.round(H * DPR));
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    buildMask();
+    const r = plotEl.getBoundingClientRect();
+    plot.x = r.left; plot.y = r.top; plot.w = r.width; plot.h = r.height;
+    clearAll();
+    updateScaleCaption();
+  }
+  function clearAll() {
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = COLOR.void;
+    ctx.fillRect(0, 0, W, H);
+  }
+  const colStep = () => (plot.w > 1100 ? 4 : 3);
+  const fmaxFor = (sr) => Math.min(16000, sr / 2 - 1);
+  const currentRate = () => (ac && state.src !== 'sim' ? ac.sampleRate : 48000);
+
+  /* ---------------- simulated signal (shown before any audio starts) ---------------- */
+  const gauss = (x, mu, sd) => { const z = (x - mu) / sd; return Math.exp(-0.5 * z * z); };
+  function simulate(t) {
+    const sr = 48000, TAU = Math.PI * 2;
+    const pulse = Math.exp(-((t * 118 / 60) % 1) * 7);
+    const phrase = 0.55 + 0.45 * Math.sin(t * 0.9) * Math.sin(t * 0.37 + 1.3);
+    const syll = 0.5 + 0.5 * Math.sin(t * 7.3 + 2 * Math.sin(t * 1.1));
+    const env = Math.min(1, 0.08 + 0.55 * phrase * syll + 0.35 * pulse);
+    const f1 = 520 + 260 * Math.sin(t * 1.3);
+    const f2 = 1500 + 600 * Math.sin(t * 0.7 + 1);
+    const f3 = 3200 + 900 * Math.sin(t * 0.45);
+    for (let i = 0; i < FFT; i++) {
+      const tt = t + i / sr;
+      wave[i] = 0.6 * (
+        env * (0.42 * Math.sin(TAU * 110 * tt) + 0.22 * Math.sin(TAU * 220.6 * tt + 0.7) + 0.12 * Math.sin(TAU * 661 * tt)) +
+        pulse * 0.35 * Math.sin(TAU * 55 * tt) +
+        (Math.random() - 0.5) * 0.05 * env
+      );
+    }
+    const hz = sr / FFT;
+    for (let k = 0; k < BINS; k++) {
+      const f = k * hz;
+      const tilt = Math.max(0, 1 - Math.log10(f + 30) / 4.4);
+      const formant = gauss(f, f1, 160) + 0.8 * gauss(f, f2, 300) + 0.5 * gauss(f, f3, 650);
+      const v = (0.38 * tilt + 0.6 * formant * syll * phrase) * env * 1.5 + pulse * gauss(f, 60, 35) * 1.1 + Math.random() * 0.012;
+      freq[k] = Math.max(0, Math.min(255, v * 255)) | 0;
+    }
+  }
+
+  /* ---------------- audio engine ---------------- */
+  let ac = null, bus = null, analyser = null, monitor = null, noiseBuf = null;
+  let demo = null, filePlay = null, mic = null;
+
+  function ensureAudio() {
+    if (ac) return true;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { toast('這個瀏覽器不支援 Web Audio，只能看模擬預覽。'); return false; }
+    ac = new AC();
+    bus = ac.createGain();
+    analyser = ac.createAnalyser();
+    analyser.fftSize = FFT;
+    analyser.smoothingTimeConstant = 0.7;
+    analyser.minDecibels = MIN_DB;
+    analyser.maxDecibels = MAX_DB;
+    monitor = ac.createGain();
+    bus.connect(analyser);
+    analyser.connect(monitor);
+    monitor.connect(ac.destination);
+    return true;
+  }
+  function noise() {
+    if (noiseBuf) return noiseBuf;
+    noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    return noiseBuf;
+  }
+  const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+
+  // A 118 BPM synth loop in A minor (Am – F – C – G), scheduled with a look-ahead clock.
+  function startDemoSynth() {
+    const BPM = 118, beat = 60 / BPM, s16 = beat / 4;
+    const out = ac.createGain();
+    out.gain.value = 0.6;
+    const comp = ac.createDynamicsCompressor();
+    comp.threshold.value = -16; comp.knee.value = 8; comp.ratio.value = 4;
+    comp.attack.value = 0.003; comp.release.value = 0.18;
+    out.connect(comp);
+    comp.connect(bus);
+
+    const send = ac.createGain(); send.gain.value = 0.45;
+    const dly = ac.createDelay(1); dly.delayTime.value = s16 * 3;
+    const fb = ac.createGain(); fb.gain.value = 0.35;
+    const dlp = ac.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 3000;
+    send.connect(dly); dly.connect(dlp); dlp.connect(fb); fb.connect(dly); dlp.connect(out);
+
+    const PROG = [
+      { root: 45, chord: [57, 60, 64] },
+      { root: 41, chord: [53, 57, 60] },
+      { root: 48, chord: [55, 60, 64] },
+      { root: 43, chord: [55, 59, 62] },
+    ];
+    const ARP = [0, 1, 2, 1, 2, 0, 1, 2];
+    const env = (g, t, peak, a, d) => {
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(peak, t + a);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + a + d);
+    };
+
+    function kick(t) {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.frequency.setValueAtTime(155, t);
+      o.frequency.exponentialRampToValueAtTime(44, t + 0.12);
+      env(g, t, 0.95, 0.004, 0.38);
+      o.connect(g); g.connect(out);
+      o.start(t); o.stop(t + 0.45);
+    }
+    function hat(t, open) {
+      const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+      s.buffer = noise();
+      f.type = 'highpass'; f.frequency.value = 7200;
+      env(g, t, open ? 0.2 : 0.09, 0.002, open ? 0.18 : 0.04);
+      s.connect(f); f.connect(g); g.connect(out);
+      s.start(t, Math.random() * 0.5); s.stop(t + 0.25);
+    }
+    function clap(t) {
+      const s = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+      s.buffer = noise();
+      f.type = 'bandpass'; f.frequency.value = 1600; f.Q.value = 0.9;
+      env(g, t, 0.55, 0.003, 0.2);
+      s.connect(f); f.connect(g); g.connect(out); g.connect(send);
+      s.start(t, Math.random() * 0.5); s.stop(t + 0.3);
+      const o = ac.createOscillator(), og = ac.createGain();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(220, t);
+      o.frequency.exponentialRampToValueAtTime(160, t + 0.08);
+      env(og, t, 0.25, 0.002, 0.09);
+      o.connect(og); og.connect(out);
+      o.start(t); o.stop(t + 0.15);
+    }
+    function bass(t, m, len) {
+      const o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain();
+      o.type = 'sawtooth'; o.frequency.value = mtof(m);
+      f.type = 'lowpass'; f.Q.value = 7;
+      f.frequency.setValueAtTime(1100, t);
+      f.frequency.exponentialRampToValueAtTime(160, t + len);
+      env(g, t, 0.28, 0.006, len);
+      o.connect(f); f.connect(g); g.connect(out);
+      o.start(t); o.stop(t + len + 0.05);
+    }
+    function pad(t, notes, len) {
+      const f = ac.createBiquadFilter(), g = ac.createGain();
+      f.type = 'lowpass';
+      f.frequency.setValueAtTime(700, t);
+      f.frequency.linearRampToValueAtTime(2200, t + len * 0.6);
+      f.frequency.linearRampToValueAtTime(900, t + len);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.06, t + 0.5);
+      g.gain.setValueAtTime(0.06, t + len - 0.4);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + len + 0.3);
+      f.connect(g); g.connect(out); g.connect(send);
+      notes.forEach((m) => [-7, 7].forEach((cents) => {
+        const o = ac.createOscillator();
+        o.type = 'sawtooth'; o.frequency.value = mtof(m); o.detune.value = cents;
+        o.connect(f); o.start(t); o.stop(t + len + 0.4);
+      }));
+    }
+    function arp(t, m) {
+      const o = ac.createOscillator(), f = ac.createBiquadFilter(), g = ac.createGain();
+      o.type = 'square'; o.frequency.value = mtof(m);
+      f.type = 'lowpass'; f.frequency.value = 2400;
+      env(g, t, 0.05, 0.003, 0.16);
+      o.connect(f); f.connect(g); g.connect(out); g.connect(send);
+      o.start(t); o.stop(t + 0.22);
+    }
+
+    let step = 0;
+    let next = ac.currentTime + 0.06;
+    function tick() {
+      while (next < ac.currentTime + 0.12) {
+        const bar = Math.floor(step / 16), s = step % 16, ch = PROG[bar % 4];
+        if (s % 4 === 0) kick(next);
+        if (s === 4 || s === 12) clap(next);
+        if (s % 2 === 1) hat(next, false);
+        if (s === 14) hat(next, true);
+        if (s % 2 === 0) bass(next, ch.root + (s === 6 || s === 14 ? 12 : 0), s16 * 1.7);
+        if (s === 0) pad(next, ch.chord, beat * 4);
+        if (bar % 8 >= 2) arp(next, ch.chord[ARP[s % 8]] + 12);
+        next += s16;
+        step++;
+      }
+    }
+    tick();
+    const id = setInterval(tick, 25);
+    return {
+      stop() {
+        clearInterval(id);
+        try { fb.disconnect(); comp.disconnect(); } catch (e) { /* already disconnected */ }
+      },
+    };
+  }
+
+  function stopAll() {
+    if (demo) { demo.stop(); demo = null; }
+    if (filePlay) {
+      try { filePlay.node.stop(); } catch (e) { /* not started */ }
+      filePlay.node.disconnect();
+      filePlay = null;
+    }
+    if (mic) {
+      mic.stream.getTracks().forEach((t) => t.stop());
+      mic.node.disconnect();
+      mic = null;
+    }
+  }
+
+  function setSource(kind) {
+    state.src = kind;
+    state.playing = true;
+    state.t0 = kind === 'sim' || !ac ? 0 : ac.currentTime;
+    onset.times.length = 0; onset.last = -1; onset.avg = 0; onset.prev = 0;
+    wf.norm = 0.02;
+    ['demo', 'file', 'mic'].forEach((k) => $('#btn-' + k).setAttribute('aria-pressed', String(k === kind)));
+    el.hint.hidden = kind !== 'sim';
+    updateScaleCaption();
+    syncPlay();
+  }
+
+  function startDemo() {
+    if (state.src === 'demo') { togglePlay(); return; }
+    if (!ensureAudio()) return;
+    ac.resume();
+    stopAll();
+    monitor.gain.value = 1;
+    demo = startDemoSynth();
+    setSource('demo');
+  }
+
+  function decode(ab) {
+    return new Promise((resolve, reject) => {
+      const p = ac.decodeAudioData(ab, resolve, reject);
+      if (p && p.catch) p.catch(reject);
+    });
+  }
+  async function loadFile(file) {
+    if (!file) return;
+    const looksAudio = /^audio\//.test(file.type) || /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|webm)$/i.test(file.name);
+    if (!looksAudio) { toast('這不是音訊檔。請選 MP3、WAV、M4A、OGG 或 FLAC。'); return; }
+    if (!ensureAudio()) return;
+    ac.resume();
+    toast('解碼中：' + file.name, 1600);
+    let buf;
+    try {
+      buf = await decode(await file.arrayBuffer());
+    } catch (e) {
+      toast('無法解碼「' + file.name + '」。換成 MP3 或 WAV 再試一次。');
+      return;
+    }
+    stopAll();
+    const node = ac.createBufferSource();
+    node.buffer = buf;
+    node.loop = true;
+    node.connect(bus);
+    node.start();
+    filePlay = { node, buf, start: ac.currentTime };
+    monitor.gain.value = 1;
+    state.fileName = file.name;
+    setSource('file');
+    setTimeout(() => {
+      if (ac.state !== 'running') {
+        state.playing = false;
+        syncPlay();
+        toast('音檔已載入。按播放鍵或空白鍵開始。');
+      }
+    }, 250);
+  }
+
+  async function startMic() {
+    if (state.src === 'mic') { togglePlay(); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast(MIC_BLOCKED); return; }
+    if (!ensureAudio()) return;
+    ac.resume();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+      stopAll();
+      const node = ac.createMediaStreamSource(stream);
+      node.connect(bus);
+      mic = { stream, node };
+      monitor.gain.value = 0; // never play the mic back into the speakers
+      await ac.resume();
+      setSource('mic');
+    } catch (e) {
+      toast(MIC_BLOCKED);
+    }
+  }
+
+  async function togglePlay() {
+    if (state.src === 'sim' || !ac) {
+      state.playing = !state.playing;
+      syncPlay();
+      return;
+    }
+    if (state.playing && ac.state === 'running') {
+      state.playing = false;
+      syncPlay();
+      await ac.suspend();
+    } else {
+      state.playing = true;
+      syncPlay();
+      try { await ac.resume(); } catch (e) { /* resume needs a gesture; the next click retries */ }
+    }
+  }
+
+  /* ---------------- analysis ---------------- */
+  function analyze(sr) {
+    let sq = 0;
+    for (let i = 0; i < FFT; i++) sq += wave[i] * wave[i];
+    const rms = Math.sqrt(sq / FFT);
+    const hz = sr / FFT;
+    let lo = 0, loN = 0, mid = 0, midN = 0, hi = 0, hiN = 0, peakI = 0, peakB = 0, num = 0, den = 0;
+    for (let k = 1; k < BINS; k++) {
+      const b = freq[k], v = b / 255, f = k * hz;
+      if (f < 250) { lo += v; loN++; } else if (f < 2000) { mid += v; midN++; } else if (f < 12000) { hi += v; hiN++; }
+      if (b > peakB) { peakB = b; peakI = k; }
+      if (b > 0) {
+        const lin = Math.pow(10, (MIN_DB + v * (MAX_DB - MIN_DB)) / 20); // back from the analyser's dB scale
+        num += f * lin;
+        den += lin;
+      }
+    }
+    return {
+      rms,
+      db: 20 * Math.log10(Math.max(rms, 1e-7)),
+      lo: loN ? lo / loN : 0,
+      mid: midN ? mid / midN : 0,
+      hi: hiN ? hi / hiN : 0,
+      peakHz: peakB > 25 ? peakI * hz : 0,
+      centroid: den > 0 ? num / den : 0,
+    };
+  }
+
+  // Onsets from positive spectral flux in the low band; tempo is the median inter-onset interval.
+  const onset = { prev: 0, avg: 0, last: -1, times: [] };
+  let beatFlash = 0;
+  function detectOnset(f, now) {
+    const flux = Math.max(0, f.lo - onset.prev);
+    onset.prev = f.lo;
+    onset.avg += (flux - onset.avg) * 0.06;
+    if (onset.times.length && now - onset.last > 4) onset.times.length = 0;
+    if (flux > onset.avg * 2.4 + 0.02 && f.lo > 0.2 && now - onset.last > 0.24) {
+      onset.last = now;
+      onset.times.push(now);
+      if (onset.times.length > 17) onset.times.shift();
+      beatFlash = 1;
+    }
+  }
+  function bpm() {
+    const t = onset.times;
+    if (t.length < 6) return 0;
+    const iv = [];
+    for (let i = 1; i < t.length; i++) iv.push(t[i] - t[i - 1]);
+    iv.sort((a, b) => a - b);
+    const m = iv[iv.length >> 1];
+    if (!(m > 0)) return 0;
+    let b = 60 / m;
+    while (b < 80) b *= 2;
+    while (b > 170) b /= 2;
+    return b;
+  }
+  const clock = () => (state.src === 'sim' || !ac ? simT : ac.currentTime);
+
+  /* ---------------- mode 1: wavefield ---------------- */
+  const wf = { up: new Float32Array(MAXC), dn: new Float32Array(MAXC), sid: new Uint32Array(MAXC), head: 0, count: 0, serial: 0, acc: 0, env: 0, norm: 0.02 };
+  function hash(n) {
+    n = Math.imul(n ^ (n >>> 16), 0x45d9f3b);
+    n = Math.imul(n ^ (n >>> 16), 0x45d9f3b);
+    return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+  }
+  function pushWave(f, dt) {
+    wf.env += (f.rms - wf.env) * (f.rms > wf.env ? 0.5 : 0.14);
+    wf.norm = Math.max(wf.norm * Math.pow(0.85, dt), wf.env, 0.012); // slow auto-gain
+    const a = Math.min(1.25, wf.env / wf.norm);
+    const tot = f.lo + f.mid + f.hi + 1e-4;
+    const upShape = 0.55 + 0.9 * (f.mid * 0.5 + f.hi) / tot;
+    const dnShape = 0.55 + 0.9 * (f.lo + f.mid * 0.5) / tot;
+    wf.acc += dt;
+    while (wf.acc >= 1 / COL_RATE) {
+      wf.acc -= 1 / COL_RATE;
+      const s = ++wf.serial, i = wf.head;
+      wf.up[i] = Math.min(1, a * upShape * 0.62 * (0.78 + 0.44 * hash(s)) * state.gain);
+      wf.dn[i] = Math.min(1, a * dnShape * 0.62 * (0.78 + 0.44 * hash(s ^ 0x9e3779b9)) * state.gain);
+      wf.sid[i] = s;
+      wf.head = (i + 1) % MAXC;
+      if (wf.count < MAXC) wf.count++;
+    }
+  }
+  function drawWavefield() {
+    const step = colStep(), dw = step * 0.56;
+    const top = plot.y + 8, bottom = plot.y + plot.h - AXIS_H;
+    const cy = snap((top + bottom) / 2), half = (bottom - top) / 2;
+    const right = plot.x + plot.w - 6;
+    const maxCols = Math.floor((plot.w - 12) / step);
+    const cols = Math.min(wf.count, maxCols);
+    for (let x = plot.x + 6; x < right; x += 6) dot(x, cy, 1, pitch, 0.14);
+    for (let i = 0; i < cols; i++) {
+      const idx = (wf.head - 1 - i + MAXC) % MAXC;
+      const x = right - i * step - dw;
+      const fade = 1 - (i / maxCols) * 0.62;
+      const u = wf.up[idx] * half, d = wf.dn[idx] * half;
+      bar(x, cy + pitch, u + pitch, -1, dw, fade * (0.42 + 0.58 * Math.min(1, wf.up[idx] * 1.5)));
+      bar(x, cy + pitch, d, 1, dw, fade * (0.42 + 0.58 * Math.min(1, wf.dn[idx] * 1.5)));
+      const sid = wf.sid[idx], r1 = hash(sid * 3 + 1), r2 = hash(sid * 3 + 2);
+      const yu = snap(cy - u - pitch * (2 + r2 * 16)), yd = snap(cy + pitch + d + pitch * (2 + r1 * 16));
+      if (r1 < 0.4 && yu > top) dot(x, yu, dw, pitch, 0.24 * fade);
+      if (r2 < 0.4 && yd < bottom - pitch) dot(x, yd, dw, pitch, 0.24 * fade);
+    }
+    flush();
+    applyMask(top, bottom);
+    const pxPerSec = COL_RATE * step;
+    for (let s = 1; right - s * pxPerSec > plot.x + 20; s++) {
+      for (let k = 0; k < 3; k++) dot(right - s * pxPerSec - 0.5, bottom + 2 + k * 2.5, 1, 1.2, 0.5);
+    }
+    flush();
+    const ly = plot.y + plot.h - 5;
+    label('NOW', right, ly, 'right');
+    for (let s = 1; right - s * pxPerSec > plot.x + 20; s++) label('−' + s + 's', right - s * pxPerSec, ly, 'center');
+  }
+
+  /* ---------------- shared log-frequency bands ---------------- */
+  const spec = { v: new Float32Array(1024), p: new Float32Array(1024) };
+  const rad = { v: new Float32Array(1024), p: new Float32Array(1024) };
+  function bandsLog(n, store, sr, dt, live) {
+    if (!live) return;
+    const hz = sr / FFT, ratio = fmaxFor(sr) / F_MIN;
+    for (let j = 0; j < n; j++) {
+      const f0 = F_MIN * Math.pow(ratio, j / n), f1 = F_MIN * Math.pow(ratio, (j + 1) / n);
+      const k0 = Math.floor(f0 / hz), k1 = Math.min(BINS, Math.ceil(f1 / hz));
+      let m = 0;
+      if (k1 - k0 <= 1) {
+        const fk = (f0 + f1) / 2 / hz, a = Math.floor(fk), t = fk - a; // band narrower than a bin: interpolate
+        m = freq[a] * (1 - t) + freq[Math.min(BINS - 1, a + 1)] * t;
+      } else {
+        for (let k = k0; k < k1; k++) if (freq[k] > m) m = freq[k];
+      }
+      const v = Math.min(1, Math.pow(m / 255, 1.5) * state.gain);
+      const cur = store.v[j];
+      store.v[j] = cur + (v - cur) * (v > cur ? 0.55 : 0.18);
+      store.p[j] = Math.max(store.p[j] - dt * 0.4, store.v[j]);
+    }
+  }
+
+  /* ---------------- mode 2: spectrum ---------------- */
+  function drawSpectrum(sr, dt, live) {
+    const step = plot.w > 1100 ? 5 : 4;
+    const n = Math.min(1024, Math.floor((plot.w - 12) / step));
+    bandsLog(n, spec, sr, dt, live);
+    const top = plot.y + 12, bottom = plot.y + plot.h - AXIS_H;
+    const base = top + (bottom - top) * 0.62;
+    const b0 = snap(base), upH = b0 - top, dnH = bottom - b0 - 4, dw = step * 0.62, left = plot.x + 6;
+    for (let j = 0; j < n; j++) {
+      const v = spec.v[j], p = spec.p[j], x = left + j * step, b = 0.4 + 0.6 * v;
+      bar(x, b0 + pitch, v * upH + pitch, -1, dw, b);
+      bar(x, b0 + pitch * 2, v * dnH, 1, dw, b * 0.38);
+      if (p > 0.02) dot(x - 0.6, snap(b0 - p * upH) - pitch * 2, dw + 1.2, pitch, 0.95);
+    }
+    flush();
+    applyMask(top - pitch * 4, bottom);
+    const span = n * step, lr = Math.log(fmaxFor(sr) / F_MIN);
+    const ticks = [50, 100, 200, 500, 1000, 2000, 5000, 10000].filter((f) => f < fmaxFor(sr));
+    const xOf = (f) => left + Math.log(f / F_MIN) / lr * span;
+    for (const f of ticks) for (let k = 0; k < 3; k++) dot(xOf(f) - 0.5, bottom + 2 + k * 2.5, 1, 1.2, 0.5);
+    flush();
+    const ly = plot.y + plot.h - 5;
+    for (const f of ticks) label(f >= 1000 ? f / 1000 + 'k' : String(f), xOf(f), ly, 'center');
+    label('Hz', left + span, ly, 'right');
+  }
+
+  /* ---------------- mode 3: scope ---------------- */
+  function drawScope() {
+    const top = plot.y + 8, h = plot.h - 16, cy = top + h / 2, left = plot.x + 6, w = plot.w - 12, half = h / 2;
+    for (let gx = 0; gx <= 10; gx++) {
+      const x = left + (w * gx) / 10;
+      for (let y = top; y <= top + h; y += 6) dot(x - 0.5, y, 1, 1, gx === 5 ? 0.3 : 0.12);
+    }
+    for (let gy = 0; gy <= 8; gy++) {
+      const y = top + (h * gy) / 8;
+      for (let x = left; x <= left + w; x += 6) dot(x, y - 0.5, 1, 1, gy === 4 ? 0.3 : 0.12);
+    }
+    let trig = 0;
+    for (let i = 1; i < FFT / 2; i++) if (wave[i - 1] < 0 && wave[i] >= 0) { trig = i; break; }
+    const win = FFT / 2, k = SCOPE_K * state.gain;
+    let col = 0;
+    for (let x = 0; x <= w; x += 1.5, col++) {
+      const s = Math.max(-1, Math.min(1, wave[trig + Math.min(win - 1, Math.floor((x / w) * win))] * k));
+      const y = cy - s * half;
+      dot(left + x - 0.9, y - 0.9, 1.8, 1.8, 0.95);
+      if (col % 2 === 0) {
+        const n = Math.floor(Math.abs(y - cy) / 5), dir = y < cy ? -1 : 1;
+        for (let j = 1; j < n; j++) dot(left + x - 0.5, cy + dir * j * 5, 1, 1, 0.14);
+      }
+    }
+    flush();
+  }
+
+  /* ---------------- mode 4: radial ---------------- */
+  function drawRadial(sr, dt, live) {
+    const cx = plot.x + plot.w / 2, cy = plot.y + plot.h / 2;
+    const R = Math.min(plot.w, plot.h) / 2 - 12;
+    if (R < 40) return;
+    const r0 = R * 0.34, L = R * 0.6;
+    const n = Math.max(48, Math.min(240, Math.floor((Math.PI * r0) / 3)));
+    bandsLog(n, rad, sr, dt, live);
+    for (let j = 0; j < n; j++) {
+      const v = rad.v[j], p = rad.p[j], th = ((j + 0.5) / n) * Math.PI, len = v * L, b = 0.4 + 0.6 * v;
+      for (let side = -1; side <= 1; side += 2) {
+        const a = -Math.PI / 2 + side * th, ca = Math.cos(a), sa = Math.sin(a);
+        for (let r = 0; r <= len; r += 4) {
+          const q = len ? r / len : 0;
+          dot(cx + ca * (r0 + r) - 0.8, cy + sa * (r0 + r) - 0.8, 1.6, 1.6, b * (1 - 0.7 * q * q));
+        }
+        if (p > 0.02) dot(cx + ca * (r0 + p * L + 5) - 1, cy + sa * (r0 + p * L + 5) - 1, 2, 2, 0.9);
+      }
+    }
+    const k = SCOPE_K * state.gain, pts = 240;
+    for (let i = 0; i < pts; i++) {
+      const s = Math.max(-1, Math.min(1, wave[Math.floor((i / pts) * FFT)] * k));
+      const a = (i / pts) * Math.PI * 2 - Math.PI / 2, rr = r0 * 0.8 + s * r0 * 0.28;
+      dot(cx + Math.cos(a) * rr - 0.8, cy + Math.sin(a) * rr - 0.8, 1.6, 1.6, 0.85);
+    }
+    for (let d = 0; d < 360; d += 6) {
+      const a = (d * Math.PI) / 180, major = d % 30 === 0;
+      for (let j = 0; j < (major ? 3 : 1); j++) {
+        const rr = R - j * 3;
+        dot(cx + Math.cos(a) * rr - 0.5, cy + Math.sin(a) * rr - 0.5, 1, 1, major ? 0.5 : 0.2);
+      }
+    }
+    flush();
+    label(F_MIN + ' Hz', cx, cy - r0 * 0.36, 'center');
+    label(fmtHz(fmaxFor(sr), 0), cx, cy + r0 * 0.36 + 8, 'center');
+  }
+
+  /* ---------------- HUD ---------------- */
+  const fmtHz = (h, d = 2) => (h >= 1000 ? (h / 1000).toFixed(d) + ' kHz' : Math.round(h) + ' Hz');
+  const minus = (s) => s.replace('-', '−');
+  function fmtTime(t) {
+    t = Math.max(0, t);
+    const m = Math.floor(t / 60), s = t - m * 60;
+    return String(m).padStart(2, '0') + ':' + s.toFixed(2).padStart(5, '0');
+  }
+  function timecode() {
+    if (state.src === 'sim' || !ac) return 'T+' + fmtTime(simT);
+    if (state.src === 'file' && filePlay) {
+      const d = filePlay.buf.duration;
+      return fmtTime((ac.currentTime - filePlay.start) % d) + ' / ' + fmtTime(d);
+    }
+    return 'T+' + fmtTime(ac.currentTime - state.t0);
+  }
+  function updateScaleCaption() {
+    const sr = currentRate();
+    let s;
+    if (state.mode === 0) s = COL_RATE + ' col/s · 視窗 ' + ((plot.w - 12) / colStep() / COL_RATE).toFixed(1) + ' s';
+    else if (state.mode === 1) s = F_MIN + ' Hz – ' + fmtHz(fmaxFor(sr), 0) + ' · log';
+    else if (state.mode === 2) s = ((FFT / 2 / sr) * 100).toFixed(2) + ' ms/div · ' + (1 / (SCOPE_K * state.gain * 4)).toFixed(3) + ' FS/div';
+    else s = F_MIN + ' Hz ↓ ' + fmtHz(fmaxFor(sr), 0);
+    el.capScale.textContent = s;
+  }
+  function syncPlay() {
+    const p = state.playing;
+    el.play.classList.toggle('is-playing', p);
+    el.play.setAttribute('aria-label', p ? '暫停' : '播放');
+    el.chip.classList.toggle('live', p && state.src !== 'sim');
+    const what = { sim: '模擬訊號', demo: '示範音軌 · 118 BPM', file: state.fileName, mic: '麥克風輸入' }[state.src];
+    const tag = !p ? 'PAUSED' : state.src === 'sim' ? 'PREVIEW' : 'LIVE';
+    el.chipText.textContent = tag + ' · ' + what;
+    el.src.textContent = SRC_LABEL[state.src];
+  }
+  let fpsT = 0, fpsN = 0, hudT = 0;
+  function hud(dt) {
+    fpsT += dt; fpsN++;
+    if (fpsT >= 0.5) { el.fps.textContent = Math.round(fpsN / fpsT) + ' FPS'; fpsT = 0; fpsN = 0; }
+    el.mL.style.transform = 'scaleX(' + Math.min(1, feat.lo * 1.25).toFixed(3) + ')';
+    el.mM.style.transform = 'scaleX(' + Math.min(1, feat.mid * 1.25).toFixed(3) + ')';
+    el.mH.style.transform = 'scaleX(' + Math.min(1, feat.hi * 1.25).toFixed(3) + ')';
+    if (beatFlash > 0 && !reduceMotion) beatFlash -= dt * 7; else beatFlash = 0;
+    el.beat.classList.toggle('on', beatFlash > 0);
+    hudT += dt;
+    if (hudT < 0.1) return;
+    hudT = 0;
+    el.rms.textContent = feat.rms > 1e-6 ? minus(feat.db.toFixed(1)) + ' dBFS' : '−∞ dBFS';
+    el.peak.textContent = feat.peakHz ? fmtHz(feat.peakHz) : '—';
+    el.cent.textContent = feat.centroid ? fmtHz(feat.centroid) : '—';
+    const b = bpm();
+    el.bpm.textContent = b ? b.toFixed(0) : '—';
+    el.sr.textContent = state.src === 'sim' || !ac ? 'SIM' : (ac.sampleRate / 1000).toFixed(1) + ' kHz';
+    el.tc.textContent = timecode();
+  }
+
+  function setMode(m) {
+    state.mode = m;
+    tabs.forEach((b, i) => b.setAttribute('aria-pressed', String(i === m)));
+    el.capMode.textContent = String(m + 1).padStart(2, '0') + ' / ' + MODES[m].name;
+    el.capAxis.textContent = MODES[m].axis;
+    updateScaleCaption();
+    clearAll();
+    try { localStorage.setItem('wavefield:mode', String(m)); } catch (e) { /* storage unavailable */ }
+  }
+
+  let toastTimer = 0;
+  function toast(msg, ms) {
+    el.toast.textContent = msg;
+    el.toast.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.toast.hidden = true; }, ms || 4200);
+  }
+
+  function toggleFullscreen() {
+    const doc = document, root = doc.documentElement;
+    if (doc.fullscreenElement) { if (doc.exitFullscreen) doc.exitFullscreen(); return; }
+    if (!root.requestFullscreen) { toast('這個環境不支援全螢幕。'); return; }
+    Promise.resolve(root.requestFullscreen()).catch(() => toast('這個環境不支援全螢幕。'));
+  }
+
+  /* ---------------- events ---------------- */
+  $('#btn-demo').addEventListener('click', startDemo);
+  $('#btn-mic').addEventListener('click', startMic);
+  $('#btn-file').addEventListener('click', () => { ensureAudio(); el.file.click(); });
+  $('#btn-fs').addEventListener('click', toggleFullscreen);
+  el.play.addEventListener('click', togglePlay);
+  el.file.addEventListener('change', () => { const f = el.file.files[0]; el.file.value = ''; loadFile(f); });
+  tabs.forEach((b, i) => b.addEventListener('click', () => setMode(i)));
+
+  function syncKnobs() {
+    state.gain = +el.gain.value;
+    state.trail = +el.trail.value;
+    el.gainOut.textContent = state.gain.toFixed(2) + '×';
+    el.trailOut.textContent = Math.round(state.trail * 100) + '%';
+    updateScaleCaption();
+  }
+  el.gain.addEventListener('input', syncKnobs);
+  el.trail.addEventListener('input', syncKnobs);
+
+  window.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.code === 'Space') {
+      if (tag === 'BUTTON') return;
+      e.preventDefault();
+      togglePlay();
+    } else if (e.key >= '1' && e.key <= '4') {
+      setMode(+e.key - 1);
+    } else if (e.key === 'f' || e.key === 'F') {
+      toggleFullscreen();
+    }
+  });
+
+  function hasFiles(e) { return !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')); }
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; el.drop.hidden = false; });
+  window.addEventListener('dragover', (e) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  window.addEventListener('dragleave', (e) => { if (!hasFiles(e)) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) el.drop.hidden = true; });
+  window.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    el.drop.hidden = true;
+    loadFile(e.dataTransfer.files[0]);
+  });
+
+  window.addEventListener('resize', resize);
+  if ('ResizeObserver' in window) new ResizeObserver(resize).observe(plotEl);
+
+  /* ---------------- loop ---------------- */
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+    last = now;
+    const live = state.playing;
+    const sr = currentRate();
+    if (live) {
+      if (state.src === 'sim') {
+        simT += dt * (reduceMotion ? 0.5 : 1);
+        simulate(simT);
+      } else if (analyser) {
+        analyser.getByteFrequencyData(freq);
+        analyser.getFloatTimeDomainData(wave);
+      }
+      feat = analyze(sr);
+      detectOnset(feat, clock());
+      pushWave(feat, dt);
+    }
+    ctx.globalAlpha = Math.max(0.15, 1 - state.trail);
+    ctx.fillStyle = COLOR.void;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = 1;
+    if (plot.w > 20 && plot.h > 20) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(plot.x, plot.y, plot.w, plot.h);
+      ctx.clip();
+      if (state.mode === 0) drawWavefield();
+      else if (state.mode === 1) drawSpectrum(sr, dt, live);
+      else if (state.mode === 2) drawScope();
+      else drawRadial(sr, dt, live);
+      ctx.restore();
+    }
+    hud(dt);
+    requestAnimationFrame(frame);
+  }
+
+  let savedMode = 0;
+  try { savedMode = parseInt(localStorage.getItem('wavefield:mode') || '0', 10) || 0; } catch (e) { /* storage unavailable */ }
+  // Pre-roll the simulated signal so the wavefield is full on the first frame.
+  for (let i = 0; i < 420; i++) {
+    simT += 1 / COL_RATE;
+    simulate(simT);
+    feat = analyze(48000);
+    pushWave(feat, 1 / COL_RATE);
+  }
+  syncKnobs();
+  resize();
+  setMode(Math.min(3, Math.max(0, savedMode)));
+  syncPlay();
+  requestAnimationFrame((t) => { last = t; frame(t); });
+})();
+</script>
+</body>
+</html>
