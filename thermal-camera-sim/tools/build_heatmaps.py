@@ -1,6 +1,6 @@
 """Turn the colored thermal artworks in the source poster into grayscale heat maps.
 
-Only the cat and the butterfly are used: they sit in the heat field as warm bodies.
+Only the cat and the butterfly are used: they move through the heat field as warm bodies.
 Each crop is mapped back to a 0..1 "heat" value by finding the nearest color on a
 reference rainbow-thermal palette. The light-grey poster background becomes transparent
 (alpha 0) so the page can render it as cold ambient air in any palette.
