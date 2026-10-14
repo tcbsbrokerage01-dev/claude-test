@@ -1,0 +1,1267 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>熱成像相機模擬</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: the page is one camera viewfinder. HUD hairlines and mono readouts frame live canvases.
+   One dark world on purpose: a thermal display has no light mode. --accent/--grad follow the active palette. */
+:root {
+  color-scheme: dark;
+  --void: #05060c;
+  --panel: #0a0d19;
+  --line: #1b2140;
+  --line-hi: #2e3866;
+  --ink: #eceff8;
+  --ink-dim: #8b93b0;
+  --ink-faint: #5a6282;
+  --scrim: rgb(5 6 12 / 0.82);
+  --scrim-soft: rgb(5 6 12 / 0.4);
+  --scan: rgb(255 255 255 / 0.035);
+  --sweep: rgb(255 255 255 / 0.06);
+  --accent: #fb8b0c;
+  --accent-hi: #fdd247;
+  --grad: linear-gradient(90deg, #00000a, #fffbe6);
+  --grad-v: linear-gradient(0deg, #00000a, #fffbe6);
+
+  --font-display: "Chakra Petch", "Noto Sans TC", system-ui, sans-serif;
+  --font-body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --fs-label: 0.72rem;
+  --fs-small: 0.85rem;
+  --fs-body: 1rem;
+  --fs-lead: 1.08rem;
+  --fs-h2: clamp(1.7rem, 3.2vw, 2.4rem);
+  --fs-en: clamp(0.9rem, 1.5vw, 1.3rem);
+  --fs-hero: clamp(2.2rem, 6.4vw, 5.2rem);
+}
+[hidden] { display: none !important; }
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+:focus-visible { outline: 2px solid var(--accent-hi); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.wrap {
+  max-width: 1240px;
+  margin-inline: auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+/* ---------- top bar ---------- */
+.bar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 20;
+  background: var(--scrim);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.bar-in { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 10px; }
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--ink); text-decoration: none; white-space: nowrap;
+  font: 600 0.82rem/1 var(--font-display); letter-spacing: 0.16em;
+}
+.brand svg { color: var(--accent); flex: none; }
+.brand-ep { color: var(--ink-faint); }
+.chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; padding: 2px; }
+.chips::-webkit-scrollbar { display: none; }
+.chip {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 7px 10px 7px 8px;
+  border: 1px solid var(--line); background: transparent; color: var(--ink-dim);
+  font: 500 0.8rem/1 var(--font-body); cursor: pointer;
+}
+.chip i { width: 20px; height: 6px; background: var(--pal-grad, var(--grad)); }
+.chip:hover { color: var(--ink); border-color: var(--line-hi); }
+.chip[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); }
+@media (max-width: 560px) { .brand-text { display: none; } }
+
+/* ---------- hero viewfinder ---------- */
+.hero {
+  position: relative;
+  height: clamp(580px, 78vh, 820px);
+  overflow: hidden;
+  background: var(--panel);
+  cursor: crosshair;
+  touch-action: pan-y;
+  isolation: isolate;
+}
+.hero canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.hero::after {
+  content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: repeating-linear-gradient(0deg, var(--scan) 0 1px, transparent 1px 3px);
+}
+.sweep {
+  position: absolute; left: 0; right: 0; top: -20%; height: 18%; z-index: 1; pointer-events: none;
+  background: linear-gradient(180deg, transparent, var(--sweep), transparent);
+  animation: sweep 7s linear infinite;
+}
+@keyframes sweep { to { transform: translateY(680%); } }
+.scrim {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background:
+    linear-gradient(90deg, var(--scrim) 0%, var(--scrim-soft) 40%, transparent 64%),
+    linear-gradient(0deg, var(--scrim) 0%, transparent 42%);
+}
+.frame { position: absolute; inset: 14px; z-index: 2; pointer-events: none; }
+.frame span { position: absolute; width: 22px; height: 22px; border-color: var(--ink); border-style: solid; border-width: 0; }
+.frame .tl { left: 0; top: 0; border-left-width: 2px; border-top-width: 2px; }
+.frame .tr { right: 0; top: 0; border-right-width: 2px; border-top-width: 2px; }
+.frame .bl { left: 0; bottom: 0; border-left-width: 2px; border-bottom-width: 2px; }
+.frame .br { right: 0; bottom: 0; border-right-width: 2px; border-bottom-width: 2px; }
+.hud-top {
+  position: absolute; z-index: 2; top: 26px; left: 0; right: 0; pointer-events: none;
+  display: flex; justify-content: space-between; gap: 12px;
+  padding-left: max(40px, env(safe-area-inset-left, 0px));
+  padding-right: max(40px, env(safe-area-inset-right, 0px));
+  font: 500 var(--fs-label)/1.4 var(--font-mono); letter-spacing: 0.12em; color: var(--ink-dim);
+}
+.hud-top div { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.rec { color: var(--ink); display: inline-flex; align-items: center; gap: 7px; }
+.rec i { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: blink 1.2s steps(2, start) infinite; }
+@keyframes blink { to { visibility: hidden; } }
+.scale {
+  position: absolute; z-index: 2; right: max(30px, env(safe-area-inset-right, 0px)); top: 76px; bottom: 150px; width: 10px;
+  pointer-events: none;
+}
+.scale i { position: absolute; inset: 0; background: var(--grad-v); border: 1px solid var(--line-hi); }
+.scale span {
+  position: absolute; right: 18px; bottom: calc(var(--p) * 100%); transform: translateY(50%);
+  font: 500 var(--fs-label)/1 var(--font-mono); color: var(--ink-dim); white-space: nowrap;
+  text-shadow: 0 0 4px var(--void), 0 0 2px var(--void);
+}
+.scale span::after { content: ""; position: absolute; right: -14px; top: 50%; width: 6px; height: 1px; background: var(--ink-dim); }
+.reticle {
+  position: absolute; left: 0; top: 0; z-index: 3; width: 56px; height: 56px; margin: -28px 0 0 -28px;
+  pointer-events: none; will-change: transform;
+}
+.reticle::before, .reticle::after { content: ""; position: absolute; }
+.reticle::before { left: 0; right: 0; top: 50%; height: 1px; background: linear-gradient(90deg, var(--ink) 0 36%, transparent 36% 64%, var(--ink) 64%); }
+.reticle::after { top: 0; bottom: 0; left: 50%; width: 1px; background: linear-gradient(180deg, var(--ink) 0 36%, transparent 36% 64%, var(--ink) 64%); }
+.reticle .ring { position: absolute; inset: 14px; border: 1px solid var(--ink); border-radius: 50%; }
+.reticle b {
+  position: absolute; left: 62px; top: 4px; padding: 3px 7px; white-space: nowrap;
+  background: var(--scrim); color: var(--ink); border-left: 2px solid var(--accent);
+  font: 500 0.8rem/1.3 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.hero-ui {
+  position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  display: flex; flex-direction: column; justify-content: flex-end; gap: 28px;
+  padding-top: 80px; padding-bottom: 30px;
+  padding-left: max(40px, env(safe-area-inset-left, 0px));
+  padding-right: max(76px, env(safe-area-inset-right, 0px));
+}
+.hero-copy { max-width: 760px; display: grid; gap: 18px; }
+.eyebrow { margin: 0; font: 500 var(--fs-label)/1 var(--font-mono); letter-spacing: 0.2em; color: var(--accent); }
+.hero h1 { margin: 0; display: grid; gap: 10px; }
+.hero h1 .en {
+  font: 500 var(--fs-en)/1.2 var(--font-display); letter-spacing: 0.28em; text-transform: uppercase; color: var(--ink-dim);
+}
+.hero h1 .zh { font: 900 var(--fs-hero)/1.02 var(--font-body); letter-spacing: 0.02em; text-wrap: balance; }
+.hero h1 em {
+  font: 600 1em/1 var(--font-display); font-style: normal; margin-right: 0.22em;
+  color: transparent; -webkit-text-stroke: 1.5px var(--accent);
+}
+.lead { margin: 0; max-width: 34em; color: var(--ink-dim); font-size: var(--fs-lead); }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; pointer-events: auto; }
+.btn {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 12px 18px; border: 1px solid var(--line-hi); background: var(--scrim);
+  color: var(--ink); text-decoration: none; cursor: pointer;
+  font: 500 0.95rem/1 var(--font-body);
+}
+.btn:hover { border-color: var(--accent); }
+.btn-hot { background: var(--accent); border-color: var(--accent); color: var(--void); font-weight: 700; }
+.btn-hot:hover { background: var(--accent-hi); border-color: var(--accent-hi); }
+.hero-foot {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 32px;
+  padding-top: 14px; border-top: 1px solid var(--line-hi);
+}
+.hero-stats { margin: 0; display: flex; flex-wrap: wrap; gap: 10px 32px; }
+.hero-stats div { display: grid; gap: 2px; }
+.hero-stats dt, .read dt { font: 500 0.66rem/1 var(--font-mono); letter-spacing: 0.16em; color: var(--ink-faint); }
+.hero-stats dd { margin: 0; font: 500 1.15rem/1.2 var(--font-mono); font-variant-numeric: tabular-nums; }
+.hint { margin: 0; font: 400 var(--fs-small)/1.4 var(--font-body); color: var(--ink-dim); }
+@media (max-width: 760px) {
+  .hero { height: auto; min-height: 640px; }
+  .hero-ui { position: relative; min-height: 640px; padding-top: 330px; padding-left: max(28px, env(safe-area-inset-left, 0px)); padding-right: max(56px, env(safe-area-inset-right, 0px)); gap: 22px; }
+  .hud-top { padding-left: max(28px, env(safe-area-inset-left, 0px)); padding-right: max(28px, env(safe-area-inset-right, 0px)); }
+  .hud-top .hide-sm { display: none; }
+  .scale { right: max(24px, env(safe-area-inset-right, 0px)); top: 72px; bottom: auto; height: 30%; }
+  .hero-stats { gap: 10px 22px; }
+}
+
+/* ---------- sections ---------- */
+.section { padding-block: clamp(64px, 9vw, 120px); border-top: 1px solid var(--line); }
+.sec-head {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 16px 56px; align-items: end;
+  margin-bottom: 40px;
+}
+.sec-label { margin: 0; font: 500 var(--fs-label)/1 var(--font-mono); letter-spacing: 0.2em; color: var(--accent); text-transform: uppercase; }
+.sec-head h2 { margin: 12px 0 0; font: 700 var(--fs-h2)/1.15 var(--font-body); text-wrap: balance; }
+.sec-head h2 span { display: block; margin-top: 6px; font: 500 0.42em/1.2 var(--font-display); letter-spacing: 0.24em; text-transform: uppercase; color: var(--ink-dim); }
+.sec-head p { margin: 0; max-width: 60ch; color: var(--ink-dim); }
+@media (max-width: 760px) { .sec-head { grid-template-columns: minmax(0, 1fr); } }
+
+/* ---------- specimens ---------- */
+.specs { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 16px; }
+.spec { grid-column: span 4; margin: 0; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); }
+.spec[data-key="cat"] { grid-row: span 2; }
+.spec[data-key="butterfly"] { grid-column: span 8; }
+.spec[data-key="hands"] { grid-column: 1 / -1; }
+.spec-view { position: relative; flex: 1 1 auto; min-height: 300px; overflow: hidden; cursor: crosshair; touch-action: pan-y; }
+.spec[data-key="butterfly"] .spec-view { min-height: 320px; }
+.spec[data-key="hands"] .spec-view { min-height: 250px; }
+.spec-view canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.tag {
+  position: absolute; left: 10px; top: 10px; z-index: 2; padding: 4px 7px;
+  background: var(--scrim); color: var(--ink); font: 500 var(--fs-label)/1.3 var(--font-mono); letter-spacing: 0.08em;
+}
+.mini-scale {
+  position: absolute; right: 12px; top: 12px; bottom: 12px; z-index: 2; width: 34px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none;
+  font: 500 0.66rem/1 var(--font-mono); color: var(--ink); text-shadow: 0 0 4px var(--void);
+}
+.mini-scale i { flex: 1; width: 6px; background: var(--grad-v); border: 1px solid var(--line-hi); }
+.probe { position: absolute; left: 0; top: 0; z-index: 3; width: 40px; height: 40px; margin: -20px 0 0 -20px; pointer-events: none; }
+.probe::before, .probe::after { content: ""; position: absolute; background: var(--ink); }
+.probe::before { left: 0; right: 0; top: 50%; height: 1px; }
+.probe::after { top: 0; bottom: 0; left: 50%; width: 1px; }
+.probe b {
+  position: absolute; left: 46px; top: -2px; padding: 2px 6px; white-space: nowrap;
+  background: var(--scrim); border-left: 2px solid var(--accent); color: var(--ink);
+  font: 500 0.76rem/1.3 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.probe.flip b { left: auto; right: 46px; }
+.spec-cap { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 10px 18px; padding: 14px 16px; border-top: 1px solid var(--line); }
+.spec-name { display: grid; gap: 2px; min-width: 0; }
+.spec-name b { font: 700 1.08rem/1.3 var(--font-body); }
+.spec-name span { font: 400 0.78rem/1.3 var(--font-mono); color: var(--ink-dim); letter-spacing: 0.04em; }
+.read { display: flex; gap: 18px; margin: 0; }
+.read div { display: grid; gap: 3px; }
+.read dd { margin: 0; font: 500 0.92rem/1.2 var(--font-mono); font-variant-numeric: tabular-nums; }
+@media (max-width: 920px) {
+  .spec, .spec[data-key="butterfly"] { grid-column: span 6; }
+  .spec[data-key="cat"] { grid-row: auto; }
+}
+@media (max-width: 620px) {
+  .spec, .spec[data-key="butterfly"] { grid-column: 1 / -1; }
+  .spec[data-key="cat"] .spec-view { min-height: 400px; }
+  .spec[data-key="hands"] .spec-view { min-height: 200px; }
+}
+
+/* ---------- lens ---------- */
+.lens { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+.lens-view {
+  position: relative; aspect-ratio: 4 / 3; max-width: 100%;
+  background: var(--panel); border: 1px solid var(--line); overflow: hidden; touch-action: pan-y; cursor: crosshair;
+}
+.lens-view canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.lens-view.drag { border-color: var(--accent); }
+.drop-hint {
+  position: absolute; inset: 0; z-index: 2; display: grid; place-items: center;
+  background: var(--scrim); color: var(--ink); font-weight: 700;
+}
+.lens-panel { display: grid; gap: 22px; padding: 22px; background: var(--panel); border: 1px solid var(--line); min-width: 0; }
+.ctl { display: grid; gap: 10px; }
+.ctl-label, .ctl > label[for] {
+  display: flex; justify-content: space-between; gap: 12px;
+  font: 500 var(--fs-label)/1.3 var(--font-mono); letter-spacing: 0.14em; color: var(--ink-dim);
+}
+.ctl output { color: var(--ink); font-variant-numeric: tabular-nums; }
+.seg { display: flex; flex-wrap: wrap; gap: 8px; }
+.seg .btn { padding: 10px 14px; font-size: 0.9rem; background: transparent; }
+.seg .btn[aria-pressed="true"], .seg .btn.on { border-color: var(--accent); background: var(--scrim); }
+.seg input:focus-visible + .btn { outline: 2px solid var(--accent-hi); outline-offset: 2px; }
+input[type="range"] { width: 100%; margin: 0; accent-color: var(--accent); }
+.check { display: flex; align-items: flex-start; gap: 10px; font-size: var(--fs-small); color: var(--ink-dim); cursor: pointer; }
+.check input { accent-color: var(--accent); margin-top: 5px; }
+.check:has(input:disabled) { opacity: 0.45; cursor: not-allowed; }
+.status { margin: 0; font-size: var(--fs-small); color: var(--ink); min-height: 3.4em; }
+.note { margin: 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: var(--fs-small); color: var(--ink-dim); }
+@media (max-width: 900px) { .lens { grid-template-columns: minmax(0, 1fr); } }
+
+/* ---------- palettes ---------- */
+.pals { display: grid; border-top: 1px solid var(--line); }
+.pal {
+  display: grid; grid-template-columns: 170px minmax(0, 1.3fr) minmax(0, 1fr); gap: 12px 32px; align-items: center;
+  width: 100%; padding: 20px 16px; text-align: left; cursor: pointer;
+  background: transparent; color: inherit; font: inherit;
+  border: 1px solid transparent; border-bottom-color: var(--line);
+}
+.pal:hover { background: var(--panel); }
+.pal[aria-pressed="true"] { background: var(--panel); border-color: var(--accent); }
+.pal-name { display: grid; gap: 2px; }
+.pal-name b { font: 700 1.15rem/1.2 var(--font-body); }
+.pal-name span { font: 500 var(--fs-label)/1.2 var(--font-display); letter-spacing: 0.22em; color: var(--ink-dim); }
+.pal-bar { display: grid; gap: 6px; }
+.pal-bar i { display: block; height: 16px; background: var(--pal-grad, var(--grad)); }
+.pal-bar span { display: flex; justify-content: space-between; font: 500 0.66rem/1 var(--font-mono); letter-spacing: 0.14em; color: var(--ink-faint); }
+.pal-desc { font-size: var(--fs-small); color: var(--ink-dim); }
+@media (max-width: 760px) { .pal { grid-template-columns: minmax(0, 1fr); } }
+
+/* ---------- footer ---------- */
+.foot { padding-block: 36px 48px; border-top: 1px solid var(--line); }
+.foot-in { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px 32px; font-size: var(--fs-small); color: var(--ink-dim); }
+.foot-in .mono { letter-spacing: 0.14em; font-size: var(--fs-label); color: var(--ink-faint); }
+
+@media (prefers-reduced-motion: reduce) {
+  .sweep { display: none; }
+  .rec i { animation: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="bar">
+  <div class="wrap bar-in">
+    <a class="brand" href="#viewfinder" aria-label="熱成像相機模擬 首頁">
+      <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <circle cx="11" cy="11" r="6"/><path d="M11 0v6M11 16v6M0 11h6M16 11h6"/>
+      </svg>
+      <span class="brand-text">THERMAL/SIM <span class="brand-ep">EP.02</span></span>
+    </a>
+    <div class="chips" role="group" aria-label="選擇色盤">
+      <button class="chip" type="button" data-pal="ironbow" aria-pressed="true"><i></i>鐵虹</button>
+      <button class="chip" type="button" data-pal="rainbow" aria-pressed="false"><i></i>彩虹</button>
+      <button class="chip" type="button" data-pal="arctic" aria-pressed="false"><i></i>極地</button>
+      <button class="chip" type="button" data-pal="whitehot" aria-pressed="false"><i></i>白熱</button>
+      <button class="chip" type="button" data-pal="isotherm" aria-pressed="false"><i></i>等溫</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="hero" id="viewfinder" aria-label="互動熱場">
+    <canvas id="field" aria-hidden="true"></canvas>
+    <div class="sweep" aria-hidden="true"></div>
+    <div class="scrim" aria-hidden="true"></div>
+    <div class="frame" aria-hidden="true"><span class="tl"></span><span class="tr"></span><span class="bl"></span><span class="br"></span></div>
+    <div class="hud-top" aria-hidden="true">
+      <div><span>LWIR 8–14 µm</span><span>ε 0.95</span><span class="hide-sm">模擬 SIM</span></div>
+      <div><span class="rec"><i></i>REC <time id="rec">00:00:00</time></span><span id="sensorRes" class="hide-sm">---×---</span></div>
+    </div>
+    <div class="scale" aria-hidden="true">
+      <i></i>
+      <span style="--p:1">38°C</span>
+      <span style="--p:0.864">35</span>
+      <span style="--p:0.636">30</span>
+      <span style="--p:0.409">25</span>
+      <span style="--p:0.182">20</span>
+      <span style="--p:0">16</span>
+    </div>
+    <div class="reticle" id="reticle" aria-hidden="true" hidden><span class="ring"></span><b id="reticleLabel">--.-°C</b></div>
+
+    <div class="hero-ui">
+      <div class="hero-copy">
+        <p class="eyebrow">VIBE CODING 系列 · EP.02</p>
+        <h1>
+          <span class="en">Thermal Camera Simulation</span>
+          <span class="zh"><em>02</em>熱成像相機模擬</span>
+        </h1>
+        <p class="lead">游標和手指都是熱源：移動就加熱，點一下投下一團熱。熱會擴散、冷卻，畫面上每一格溫度都是即時算出來的。</p>
+        <div class="cta">
+          <a class="btn btn-hot" href="#lens">開啟即時鏡頭</a>
+          <a class="btn" href="#specimens">查看樣本庫</a>
+        </div>
+      </div>
+      <div class="hero-foot">
+        <dl class="hero-stats">
+          <div><dt>MAX</dt><dd id="hMax">--.-°</dd></div>
+          <div><dt>MIN</dt><dd id="hMin">--.-°</dd></div>
+          <div><dt>AVG</dt><dd id="hAvg">--.-°</dd></div>
+          <div><dt>SPOT</dt><dd id="hSpot">--.-°</dd></div>
+          <div><dt>FPS</dt><dd id="hFps">--</dd></div>
+        </dl>
+        <p class="hint">移動加熱 · 點擊投熱 · 停下來會自動巡航</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="specimens">
+    <div class="wrap">
+      <header class="sec-head">
+        <div>
+          <p class="sec-label">// Specimens</p>
+          <h2>樣本庫<span>Specimen Library</span></h2>
+        </div>
+        <p>五張熱影像取自 EP.02 封面。原圖的顏色先被反推成溫度，再用你選的色盤重新顯像，所以切換色盤時整排樣本會一起變。把游標移到畫面上，可以讀出那一點的溫度。</p>
+      </header>
+
+      <div class="specs">
+        <figure class="spec" data-key="cat">
+          <div class="spec-view">
+            <canvas aria-label="貓的熱影像" role="img"></canvas>
+            <span class="tag">SPC-01</span>
+            <div class="mini-scale" aria-hidden="true"><span>38.4</span><i></i><span>21.0</span></div>
+            <div class="probe" hidden><b>--.-°C</b></div>
+          </div>
+          <figcaption class="spec-cap">
+            <div class="spec-name"><b>貓</b><span>Felis catus · 室內</span></div>
+            <dl class="read"><div><dt>MAX</dt><dd data-read="max">--.-°</dd></div><div><dt>MIN</dt><dd data-read="min">--.-°</dd></div><div><dt>SPOT</dt><dd data-read="spot">—</dd></div></dl>
+          </figcaption>
+        </figure>
+
+        <figure class="spec" data-key="butterfly">
+          <div class="spec-view">
+            <canvas aria-label="蝴蝶的熱影像" role="img"></canvas>
+            <span class="tag">SPC-02</span>
+            <div class="mini-scale" aria-hidden="true"><span>31.2</span><i></i><span>19.5</span></div>
+            <div class="probe" hidden><b>--.-°C</b></div>
+          </div>
+          <figcaption class="spec-cap">
+            <div class="spec-name"><b>蝴蝶</b><span>Lepidoptera · 曬太陽後</span></div>
+            <dl class="read"><div><dt>MAX</dt><dd data-read="max">--.-°</dd></div><div><dt>MIN</dt><dd data-read="min">--.-°</dd></div><div><dt>SPOT</dt><dd data-read="spot">—</dd></div></dl>
+          </figcaption>
+        </figure>
+
+        <figure class="spec" data-key="deer">
+          <div class="spec-view">
+            <canvas aria-label="夜間野外的鹿的熱影像" role="img"></canvas>
+            <span class="tag">SPC-03</span>
+            <div class="mini-scale" aria-hidden="true"><span>36.8</span><i></i><span>−1.5</span></div>
+            <div class="probe" hidden><b>--.-°C</b></div>
+          </div>
+          <figcaption class="spec-cap">
+            <div class="spec-name"><b>夜間的鹿</b><span>Cervidae · 野外</span></div>
+            <dl class="read"><div><dt>MAX</dt><dd data-read="max">--.-°</dd></div><div><dt>MIN</dt><dd data-read="min">--.-°</dd></div><div><dt>SPOT</dt><dd data-read="spot">—</dd></div></dl>
+          </figcaption>
+        </figure>
+
+        <figure class="spec" data-key="signal">
+          <div class="spec-view">
+            <canvas aria-label="動態殘影人像的熱影像" role="img"></canvas>
+            <span class="tag">SPC-04</span>
+            <div class="mini-scale" aria-hidden="true"><span>36.5</span><i></i><span>16.0</span></div>
+            <div class="probe" hidden><b>--.-°C</b></div>
+          </div>
+          <figcaption class="spec-cap">
+            <div class="spec-name"><b>訊號殘影</b><span>Motion ghost · 長曝光</span></div>
+            <dl class="read"><div><dt>MAX</dt><dd data-read="max">--.-°</dd></div><div><dt>MIN</dt><dd data-read="min">--.-°</dd></div><div><dt>SPOT</dt><dd data-read="spot">—</dd></div></dl>
+          </figcaption>
+        </figure>
+
+        <figure class="spec" data-key="hands">
+          <div class="spec-view">
+            <canvas aria-label="仿《創造亞當》雙手的熱影像" role="img"></canvas>
+            <span class="tag">SPC-05</span>
+            <div class="mini-scale" aria-hidden="true"><span>35.6</span><i></i><span>24.0</span></div>
+            <div class="probe" hidden><b>--.-°C</b></div>
+          </div>
+          <figcaption class="spec-cap">
+            <div class="spec-name"><b>創造亞當</b><span>after Michelangelo · 指尖溫差</span></div>
+            <dl class="read"><div><dt>MAX</dt><dd data-read="max">--.-°</dd></div><div><dt>MIN</dt><dd data-read="min">--.-°</dd></div><div><dt>SPOT</dt><dd data-read="spot">—</dd></div></dl>
+          </figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="lens">
+    <div class="wrap">
+      <header class="sec-head">
+        <div>
+          <p class="sec-label">// Live Lens</p>
+          <h2>即時鏡頭<span>Visible → Thermal</span></h2>
+        </div>
+        <p>上傳照片或開啟相機，畫面會被轉成熱像。拖曳斜線比對前後，LEVEL 和 SPAN 跟真的熱像儀一樣，用來決定色盤要涵蓋哪一段溫度。</p>
+      </header>
+
+      <div class="lens">
+        <div class="lens-view" id="lensView">
+          <canvas id="lensCanvas" role="img" aria-label="熱像鏡頭：斜線左側是原始影像，右側是熱像"></canvas>
+          <video id="cam" playsinline muted hidden></video>
+          <div class="drop-hint" id="dropHint" hidden>放開以載入照片</div>
+        </div>
+
+        <div class="lens-panel">
+          <div class="ctl">
+            <span class="ctl-label">SOURCE 來源</span>
+            <div class="seg">
+              <button class="btn" type="button" id="srcSample" aria-pressed="true">封面樣本</button>
+              <input class="sr-only" type="file" id="upload" accept="image/*">
+              <label class="btn" for="upload" id="srcUpload">上傳照片</label>
+              <button class="btn" type="button" id="srcCam" aria-pressed="false">開啟相機</button>
+            </div>
+            <p class="status" id="lensStatus" role="status">目前是 SPC-04 訊號殘影：斜線左側是原圖配色，右側用目前的色盤重新顯像。</p>
+          </div>
+          <div class="ctl">
+            <label for="level">LEVEL 中心溫度 <output id="levelOut" for="level">25.0°C</output></label>
+            <input type="range" id="level" min="0" max="100" value="50">
+          </div>
+          <div class="ctl">
+            <label for="span">SPAN 溫度跨距 <output id="spanOut" for="span">30.0°C</output></label>
+            <input type="range" id="span" min="10" max="100" value="100">
+          </div>
+          <div class="ctl">
+            <label for="split">SPLIT 分割位置 <output id="splitOut" for="split">42%</output></label>
+            <input type="range" id="split" min="0" max="100" value="42">
+          </div>
+          <div class="ctl">
+            <label class="check"><input type="checkbox" id="skin" checked disabled> 人體加溫：把膚色區域當成熱源</label>
+            <label class="check"><input type="checkbox" id="invert" disabled> 反轉亮度：暗處當成熱</label>
+          </div>
+          <dl class="read">
+            <div><dt>MAX</dt><dd id="lMax">--.-°</dd></div>
+            <div><dt>MIN</dt><dd id="lMin">--.-°</dd></div>
+            <div><dt>SPOT</dt><dd id="lSpot">—</dd></div>
+            <div><dt>SENSOR</dt><dd id="lRes">---</dd></div>
+          </dl>
+          <p class="note">一般照片沒有溫度資訊。這裡用亮度和膚色估算熱度，是視覺模擬，不是量測。照片和相機畫面只在你的瀏覽器裡處理，不會上傳。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="palettes">
+    <div class="wrap">
+      <header class="sec-head">
+        <div>
+          <p class="sec-label">// Palettes</p>
+          <h2>色盤<span>Color Palettes</span></h2>
+        </div>
+        <p>色盤只改變顯示，不改變溫度。同一份熱資料換一組顏色，眼睛最先注意到的地方就不一樣。點一列即可套用到整頁。</p>
+      </header>
+      <div class="pals">
+        <button class="pal" type="button" data-pal="ironbow" aria-pressed="true">
+          <span class="pal-name"><b>鐵虹</b><span>IRONBOW</span></span>
+          <span class="pal-bar"><i></i><span><span>COLD</span><span>HOT</span></span></span>
+          <span class="pal-desc">最常見的預設色盤。暗紫偏冷、黃白偏熱，人體和建築都好讀。</span>
+        </button>
+        <button class="pal" type="button" data-pal="rainbow" aria-pressed="false">
+          <span class="pal-name"><b>彩虹</b><span>RAINBOW HC</span></span>
+          <span class="pal-bar"><i></i><span><span>COLD</span><span>HOT</span></span></span>
+          <span class="pal-desc">高對比彩虹。只差一兩度的場景也能拉出層次，適合找管線漏水或電路熱點。</span>
+        </button>
+        <button class="pal" type="button" data-pal="arctic" aria-pressed="false">
+          <span class="pal-name"><b>極地</b><span>ARCTIC</span></span>
+          <span class="pal-bar"><i></i><span><span>COLD</span><span>HOT</span></span></span>
+          <span class="pal-desc">以藍色為底，只有最熱的部分轉成金色，用來在冷背景裡找出熱源。</span>
+        </button>
+        <button class="pal" type="button" data-pal="whitehot" aria-pressed="false">
+          <span class="pal-name"><b>白熱</b><span>WHITE HOT</span></span>
+          <span class="pal-bar"><i></i><span><span>COLD</span><span>HOT</span></span></span>
+          <span class="pal-desc">灰階，越白越熱。夜間搜救和野生動物觀察常用，輪廓最好辨認。</span>
+        </button>
+        <button class="pal" type="button" data-pal="isotherm" aria-pressed="false">
+          <span class="pal-name"><b>等溫</b><span>ISOTHERM</span></span>
+          <span class="pal-bar"><i></i><span><span>COLD</span><span>HOT</span></span></span>
+          <span class="pal-desc">畫面維持灰階，只把高於門檻的區域上色。本頁門檻設在顯示範圍的 70%。</span>
+        </button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <span class="mono">EP.02 · THERMAL CAMERA SIMULATION</span>
+    <span>畫面中所有溫度都是模擬值，不是實際量測。熱像素材取自 EP.02 封面圖，顏色經反推後重新上色。</span>
+  </div>
+</footer>
+
+<script src="heatmaps.js"></script>
+<script>
+(() => {
+  'use strict';
+
+  const ASSETS = window.THERMAL_ASSETS || { heat: {}, original: {} };
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const DPR = () => Math.min(2, window.devicePixelRatio || 1);
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+  const fmt = (c) => (c < 0 ? '−' : '') + Math.abs(c).toFixed(1);
+
+  /* ---------- palettes ---------- */
+  const PALETTES = {
+    ironbow:  { accent: '#fb8b0c', hi: '#fdd247', stops: [[0, '#00000a'], [0.14, '#1c0a4a'], [0.3, '#5b0f8a'], [0.45, '#b0257a'], [0.58, '#e8492a'], [0.72, '#fb8b0c'], [0.86, '#fdd247'], [1, '#fffbe6']] },
+    rainbow:  { accent: '#22c3ff', hi: '#ffe600', stops: [[0, '#05010f'], [0.1, '#2a0a6b'], [0.22, '#1f3bff'], [0.36, '#00b8ff'], [0.48, '#00e39a'], [0.6, '#9cf000'], [0.7, '#ffe600'], [0.8, '#ff9a00'], [0.9, '#ff2a10'], [1, '#ffffff']] },
+    arctic:   { accent: '#f5b32a', hi: '#9ed3f0', stops: [[0, '#02040c'], [0.2, '#0b1d4d'], [0.4, '#1d4f9e'], [0.58, '#3c8fd6'], [0.7, '#9ed3f0'], [0.78, '#f2e2a0'], [0.88, '#f5b32a'], [1, '#fff3c0']] },
+    whitehot: { accent: '#e6e9f2', hi: '#ffffff', stops: [[0, '#000000'], [0.5, '#5a5a5a'], [1, '#ffffff']] },
+    isotherm: { accent: '#ff4a1a', hi: '#ff9a00', stops: [[0, '#050505'], [0.7, '#bdbdbd'], [0.7, '#ff2a10'], [0.85, '#ff9a00'], [1, '#ffef7a']] },
+  };
+  const hexRGB = (h) => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+  function buildLUT(stops) {
+    const rgb = stops.map(([p, c]) => [p, hexRGB(c)]);
+    const lut = new Uint8ClampedArray(256 * 3);
+    for (let i = 0; i < 256; i++) {
+      const t = i / 255;
+      let k = 0;
+      while (k < rgb.length - 2 && t > rgb[k + 1][0]) k++;
+      const [p0, a] = rgb[k], [p1, b] = rgb[k + 1];
+      const f = p1 > p0 ? clamp((t - p0) / (p1 - p0), 0, 1) : 1;
+      for (let c = 0; c < 3; c++) lut[i * 3 + c] = a[c] + (b[c] - a[c]) * f;
+    }
+    return lut;
+  }
+  const gradCSS = (stops, deg) => `linear-gradient(${deg}deg, ${stops.map(([p, c]) => `${c} ${(p * 100).toFixed(1)}%`).join(', ')})`;
+
+  let LUT = buildLUT(PALETTES.ironbow.stops);
+  let palName = 'ironbow';
+  const onPalette = [];
+
+  document.querySelectorAll('[data-pal]').forEach((el) => {
+    el.style.setProperty('--pal-grad', gradCSS(PALETTES[el.dataset.pal].stops, 90));
+    el.addEventListener('click', () => setPalette(el.dataset.pal));
+  });
+
+  function setPalette(name) {
+    const p = PALETTES[name];
+    if (!p) return;
+    palName = name;
+    LUT = buildLUT(p.stops);
+    const root = document.documentElement.style;
+    root.setProperty('--accent', p.accent);
+    root.setProperty('--accent-hi', p.hi);
+    root.setProperty('--grad', gradCSS(p.stops, 90));
+    root.setProperty('--grad-v', gradCSS(p.stops, 0));
+    document.querySelectorAll('[data-pal]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.pal === name)));
+    try { localStorage.setItem('thermal-palette', name); } catch (e) { /* storage unavailable */ }
+    onPalette.forEach((fn) => fn());
+  }
+
+  // values: heat per pixel; scale maps a value to 0..255; noise adds sensor grain
+  function colorize(values, img, scale, noise) {
+    const d = img.data, n = values.length;
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
+      let v = values[i] * scale;
+      if (noise) v += (Math.random() - 0.5) * noise;
+      const k = (v < 0 ? 0 : v > 255 ? 255 : v | 0) * 3;
+      d[j] = LUT[k]; d[j + 1] = LUT[k + 1]; d[j + 2] = LUT[k + 2]; d[j + 3] = 255;
+    }
+  }
+
+  const loadImage = (src) => new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = reject;
+    im.src = src;
+  });
+  const canvas2d = (w, h) => {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    return [c, c.getContext('2d', { willReadFrequently: true })];
+  };
+
+  // Smooth random blobs in 0..1, used as a non-uniform ambient background
+  function blobNoise(w, h, cells) {
+    const out = new Float32Array(w * h);
+    const [o, ox] = canvas2d(w, h);
+    ox.imageSmoothingEnabled = true;
+    ox.imageSmoothingQuality = 'high';
+    [[cells, 0.65], [cells * 3, 0.35]].forEach(([cx, weight]) => {
+      const gw = Math.max(2, Math.round(cx)), gh = Math.max(2, Math.round(cx * h / w));
+      const [g, gx] = canvas2d(gw, gh);
+      const id = gx.createImageData(gw, gh);
+      for (let i = 0; i < gw * gh; i++) {
+        const r = Math.random() * 255;
+        id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = r;
+        id.data[i * 4 + 3] = 255;
+      }
+      gx.putImageData(id, 0, 0);
+      ox.clearRect(0, 0, w, h);
+      ox.drawImage(g, 0, 0, w, h);
+      const d = ox.getImageData(0, 0, w, h).data;
+      for (let i = 0; i < w * h; i++) out[i] += (d[i * 4] / 255) * weight;
+    });
+    return out;
+  }
+
+  const images = {};
+  const ready = Promise.all(
+    Object.entries(ASSETS.heat).map(([k, src]) => loadImage(src).then((im) => { images[k] = im; }).catch(() => {}))
+      .concat(ASSETS.original.signal ? [loadImage(ASSETS.original.signal).then((im) => { images.signalOriginal = im; }).catch(() => {})] : [])
+  );
+
+  /* ---------- hero: live heat field ---------- */
+  const hero = document.getElementById('viewfinder');
+  const field = document.getElementById('field');
+  const fctx = field.getContext('2d');
+  const reticle = document.getElementById('reticle');
+  const reticleLabel = document.getElementById('reticleLabel');
+  const hStat = { max: document.getElementById('hMax'), min: document.getElementById('hMin'), avg: document.getElementById('hAvg'), spot: document.getElementById('hSpot'), fps: document.getElementById('hFps') };
+  const recEl = document.getElementById('rec');
+  const HERO_RANGE = [16, 38];
+  const heroC = (v) => HERO_RANGE[0] + v * (HERO_RANGE[1] - HERO_RANGE[0]);
+
+  let FW = 0, FH = 0, V, T, AMB, SV, SA, heroImg, sensor, sctx;
+  const pointer = { x: 0.5, y: 0.5, px: null, py: null, inside: false, last: -1e9 };
+  const ghost = { x: 0.3, y: 0.5 };
+  let heroVisible = true;
+
+  function heroLayout() {
+    const r = hero.getBoundingClientRect();
+    const w = Math.max(1, r.width), h = Math.max(1, r.height);
+    FW = Math.round(clamp(w / 5, 150, 300));
+    FH = Math.max(80, Math.round(FW * h / w));
+    [sensor, sctx] = canvas2d(FW, FH);
+    heroImg = sctx.createImageData(FW, FH);
+    const n = FW * FH;
+    V = new Float32Array(n); T = new Float32Array(n);
+    SV = new Float32Array(n); SA = new Float32Array(n);
+    AMB = new Float32Array(n);
+    const noise = blobNoise(FW, FH, 7);
+    for (let y = 0; y < FH; y++) {
+      for (let x = 0; x < FW; x++) {
+        const i = y * FW + x;
+        AMB[i] = 0.17 + 0.05 * (1 - y / FH) + (noise[i] - 0.5) * 0.14;
+      }
+    }
+    V.set(AMB);
+    stampSubjects(w / h);
+    field.width = Math.round(w * DPR());
+    field.height = Math.round(h * DPR());
+    for (let i = 0; i < 80; i++) step();
+    document.getElementById('sensorRes').textContent = `${FW}×${FH}`;
+  }
+
+  // The cat and butterfly heat maps act as fixed warm bodies inside the field
+  function stampSubjects(aspect) {
+    if (!images.cat || !images.butterfly) return;
+    const [c, x] = canvas2d(FW, FH);
+    x.imageSmoothingQuality = 'high';
+    const put = (im, cx, cy, hgt) => {
+      const wdt = hgt * im.width / im.height;
+      x.drawImage(im, cx - wdt / 2, cy - hgt / 2, wdt, hgt);
+    };
+    const cat = images.cat, bf = images.butterfly;
+    if (aspect >= 1.15) {
+      const ch = FH * 0.8;
+      put(cat, FW * 0.76, FH * 0.97 - ch / 2, ch);
+      put(bf, FW * 0.55, FH * 0.2, FW * 0.22 * bf.height / bf.width);
+    } else {
+      // portrait: keep both subjects in the top band, above the headline
+      const ch = Math.min(FH * 0.34, FW * 0.95);
+      put(cat, FW * 0.62, FH * 0.08 + ch / 2, ch);
+      put(bf, FW * 0.25, FH * 0.17, FW * 0.4 * bf.height / bf.width);
+    }
+    const d = x.getImageData(0, 0, FW, FH).data;
+    for (let i = 0; i < FW * FH; i++) { SA[i] = d[i * 4 + 3] / 255; SV[i] = d[i * 4] / 255; }
+  }
+
+  const DIFFUSE = 0.2, COOL = 0.014, PULL = 0.45;
+  function step() {
+    const w = FW, h = FH;
+    for (let y = 0; y < h; y++) {
+      const up = y > 0 ? -w : 0, dn = y < h - 1 ? w : 0, row = y * w;
+      for (let x = 0; x < w; x++) {
+        const i = row + x, v = V[i];
+        const l = x > 0 ? V[i - 1] : v, r = x < w - 1 ? V[i + 1] : v;
+        let nv = v + DIFFUSE * (l + r + V[i + up] + V[i + dn] - 4 * v) - COOL * (v - AMB[i]);
+        const a = SA[i];
+        if (a > 0) nv += (SV[i] - nv) * a * PULL;
+        T[i] = nv;
+      }
+    }
+    const t = V; V = T; T = t;
+  }
+
+  // Pull cells toward a target heat with a gaussian falloff
+  function addHeat(nx, ny, target, amount, sigma) {
+    const cx = nx * FW, cy = ny * FH, r = Math.ceil(sigma * 3), inv = 1 / (2 * sigma * sigma);
+    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(FW - 1, Math.ceil(cx + r));
+    const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(FH - 1, Math.ceil(cy + r));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const dx = x - cx, dy = y - cy, g = Math.exp(-(dx * dx + dy * dy) * inv);
+        const i = y * FW + x;
+        if (V[i] < target) V[i] += (target - V[i]) * amount * g;
+      }
+    }
+  }
+  const sampleField = (nx, ny) => V[clamp(Math.floor(ny * FH), 0, FH - 1) * FW + clamp(Math.floor(nx * FW), 0, FW - 1)];
+
+  function setPointer(e) {
+    const r = hero.getBoundingClientRect();
+    pointer.x = clamp((e.clientX - r.left) / r.width, 0, 1);
+    pointer.y = clamp((e.clientY - r.top) / r.height, 0, 1);
+    pointer.inside = true;
+    pointer.last = performance.now();
+  }
+  hero.addEventListener('pointermove', setPointer, { passive: true });
+  hero.addEventListener('pointerleave', () => { pointer.inside = false; pointer.px = null; });
+  hero.addEventListener('pointerdown', (e) => {
+    if (!V || e.target.closest('a, button')) return;
+    setPointer(e);
+    addHeat(pointer.x, pointer.y, 1, 0.9, 7 * FW / 240);
+  });
+
+  let lastFrame = performance.now(), fpsFrames = 0, fpsTime = 0, statTime = 0;
+  const t0 = performance.now();
+  let spotV = 0, wasLive = false;
+
+  function heroFrame(now) {
+    const dt = Math.min(100, now - lastFrame);
+    lastFrame = now;
+    fpsFrames++; fpsTime += dt;
+
+    const sigma = 4.2 * FW / 240;
+    const live = pointer.inside && now - pointer.last < 2500;
+    if (live && !wasLive) pointer.px = null;
+    wasLive = live;
+    let rx, ry;
+    if (live) {
+      // lay heat along the path since last frame so fast moves leave a continuous trail
+      const px = pointer.px ?? pointer.x, py = pointer.py ?? pointer.y;
+      const dist = Math.hypot((pointer.x - px) * FW, (pointer.y - py) * FH);
+      const steps = Math.max(1, Math.ceil(dist / (sigma * 0.6)));
+      for (let s = 1; s <= steps; s++) {
+        const f = s / steps;
+        addHeat(px + (pointer.x - px) * f, py + (pointer.y - py) * f, 0.86, 0.12 / Math.sqrt(steps), sigma);
+      }
+      pointer.px = pointer.x; pointer.py = pointer.y;
+      rx = pointer.x; ry = pointer.y;
+    } else if (!reduceMotion) {
+      const t = (now - t0) / 1000;
+      ghost.x = 0.3 + 0.2 * Math.sin(t * 0.31);
+      ghost.y = 0.42 + 0.2 * Math.sin(t * 0.47 + 1.1);
+      addHeat(ghost.x, ghost.y, 0.8, 0.06, sigma);
+      rx = ghost.x; ry = ghost.y;
+    }
+    step(); step();
+    colorize(V, heroImg, 255, 7);
+    sctx.putImageData(heroImg, 0, 0);
+    fctx.imageSmoothingEnabled = true;
+    fctx.imageSmoothingQuality = 'high';
+    fctx.drawImage(sensor, 0, 0, field.width, field.height);
+
+    if (rx !== undefined) {
+      reticle.hidden = false;
+      reticle.style.transform = `translate(${rx * hero.clientWidth}px, ${ry * hero.clientHeight}px)`;
+      spotV = sampleField(rx, ry);
+    } else {
+      reticle.hidden = true;
+    }
+
+    statTime += dt;
+    if (statTime > 160) {
+      statTime = 0;
+      let mx = 0, mn = 1, sum = 0;
+      for (let i = 0; i < V.length; i++) { const v = V[i]; if (v > mx) mx = v; if (v < mn) mn = v; sum += v; }
+      hStat.max.textContent = fmt(heroC(clamp(mx, 0, 1))) + '°';
+      hStat.min.textContent = fmt(heroC(clamp(mn, 0, 1))) + '°';
+      hStat.avg.textContent = fmt(heroC(sum / V.length)) + '°';
+      const spot = fmt(heroC(clamp(spotV, 0, 1)));
+      hStat.spot.textContent = rx !== undefined ? spot + '°' : '—';
+      reticleLabel.textContent = spot + '°C';
+      if (fpsTime > 500) { hStat.fps.textContent = Math.round(fpsFrames * 1000 / fpsTime); fpsFrames = 0; fpsTime = 0; }
+    }
+    const s = Math.floor((now - t0) / 1000);
+    recEl.textContent = [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map((n) => String(n).padStart(2, '0')).join(':');
+  }
+
+  /* ---------- specimens ---------- */
+  const SPEC_INFO = {
+    cat:       { range: [21.0, 38.4], fit: 'contain' },
+    butterfly: { range: [19.5, 31.2], fit: 'contain' },
+    deer:      { range: [-1.5, 36.8], fit: 'cover' },
+    signal:    { range: [16.0, 36.5], fit: 'cover' },
+    hands:     { range: [24.0, 35.6], fit: 'contain' },
+  };
+  const specs = [...document.querySelectorAll('.spec')].map((fig) => ({
+    key: fig.dataset.key,
+    info: SPEC_INFO[fig.dataset.key],
+    view: fig.querySelector('.spec-view'),
+    canvas: fig.querySelector('canvas'),
+    probe: fig.querySelector('.probe'),
+    probeLabel: fig.querySelector('.probe b'),
+    read: { max: fig.querySelector('[data-read="max"]'), min: fig.querySelector('[data-read="min"]'), spot: fig.querySelector('[data-read="spot"]') },
+  }));
+  const specC = (s, v255) => s.info.range[0] + (v255 / 255) * (s.info.range[1] - s.info.range[0]);
+
+  function composeSpec(s) {
+    const im = images[s.key];
+    const W = s.view.clientWidth, H = s.view.clientHeight;
+    if (!im || !W || !H) return;
+    const SW = Math.round(clamp(W * 0.8, 160, 960)), SH = Math.max(1, Math.round(SW * H / W));
+    const [c, x] = canvas2d(SW, SH);
+    const noise = blobNoise(SW, SH, 5);
+    const bg = x.createImageData(SW, SH);
+    for (let i = 0; i < SW * SH; i++) {
+      const g = (0.1 + (noise[i] - 0.5) * 0.08) * 255;
+      bg.data[i * 4] = bg.data[i * 4 + 1] = bg.data[i * 4 + 2] = g;
+      bg.data[i * 4 + 3] = 255;
+    }
+    x.putImageData(bg, 0, 0);
+    const sc = s.info.fit === 'cover'
+      ? Math.max(SW / im.width, SH / im.height)
+      : Math.min((SW * 0.84) / im.width, (SH * 0.84) / im.height);
+    const dw = im.width * sc, dh = im.height * sc;
+    x.imageSmoothingQuality = 'high';
+    x.drawImage(im, (SW - dw) / 2, (SH - dh) / 2, dw, dh);
+    const d = x.getImageData(0, 0, SW, SH).data;
+    const vals = new Uint8Array(SW * SH);
+    let mx = 0, mn = 255;
+    for (let i = 0; i < SW * SH; i++) { const v = d[i * 4]; vals[i] = v; if (v > mx) mx = v; if (v < mn) mn = v; }
+    Object.assign(s, { vals, SW, SH, sensor: c, sctx: x, out: x.createImageData(SW, SH) });
+    s.read.max.textContent = fmt(specC(s, mx)) + '°';
+    s.read.min.textContent = fmt(specC(s, mn)) + '°';
+    s.canvas.width = Math.round(W * DPR());
+    s.canvas.height = Math.round(H * DPR());
+    paintSpec(s);
+  }
+  function paintSpec(s) {
+    if (!s.vals) return;
+    colorize(s.vals, s.out, 1, 0);
+    s.sctx.putImageData(s.out, 0, 0);
+    const ctx = s.canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(s.sensor, 0, 0, s.canvas.width, s.canvas.height);
+  }
+  specs.forEach((s) => {
+    s.view.addEventListener('pointermove', (e) => {
+      if (!s.vals) return;
+      const r = s.view.getBoundingClientRect();
+      const x = e.clientX - r.left, y = e.clientY - r.top;
+      const v = s.vals[clamp(Math.floor(y / r.height * s.SH), 0, s.SH - 1) * s.SW + clamp(Math.floor(x / r.width * s.SW), 0, s.SW - 1)];
+      const label = fmt(specC(s, v));
+      s.probe.hidden = false;
+      s.probe.style.transform = `translate(${x}px, ${y}px)`;
+      s.probe.classList.toggle('flip', x > r.width - 130);
+      s.probeLabel.textContent = label + '°C';
+      s.read.spot.textContent = label + '°';
+    }, { passive: true });
+    s.view.addEventListener('pointerleave', () => { s.probe.hidden = true; s.read.spot.textContent = '—'; });
+  });
+
+  /* ---------- live lens ---------- */
+  const L = {
+    view: document.getElementById('lensView'),
+    canvas: document.getElementById('lensCanvas'),
+    video: document.getElementById('cam'),
+    status: document.getElementById('lensStatus'),
+    src: 'sample', visual: null, mirror: false, stream: null,
+    SW: 320, SH: 240, vals: null, out: null, sensor: null, sctx: null,
+    level: 0.5, span: 1, split: 0.42, probe: null, drag: false, visible: false, dirty: true,
+  };
+  L.ctx = L.canvas.getContext('2d');
+  const LENS_RANGE = [10, 40];
+  const lensC = (v) => LENS_RANGE[0] + v * (LENS_RANGE[1] - LENS_RANGE[0]);
+  const ui = {
+    sample: document.getElementById('srcSample'), upload: document.getElementById('srcUpload'), cam: document.getElementById('srcCam'),
+    file: document.getElementById('upload'), level: document.getElementById('level'), span: document.getElementById('span'), split: document.getElementById('split'),
+    levelOut: document.getElementById('levelOut'), spanOut: document.getElementById('spanOut'), splitOut: document.getElementById('splitOut'),
+    skin: document.getElementById('skin'), invert: document.getElementById('invert'),
+    max: document.getElementById('lMax'), min: document.getElementById('lMin'), spot: document.getElementById('lSpot'), res: document.getElementById('lRes'),
+    drop: document.getElementById('dropHint'),
+  };
+
+  function lensSensor(w, h) {
+    if (L.SW !== w || L.SH !== h || !L.sensor) {
+      L.SW = w; L.SH = h;
+      [L.sensor, L.sctx] = canvas2d(w, h);
+      L.vals = new Uint8Array(w * h);
+      L.out = L.sctx.createImageData(w, h);
+      ui.res.textContent = `${w}×${h}`;
+    }
+  }
+  function drawCover(ctx, src, w, h, mirror) {
+    const sw = src.videoWidth || src.naturalWidth || src.width, sh = src.videoHeight || src.naturalHeight || src.height;
+    if (!sw || !sh) return false;
+    const sc = Math.max(w / sw, h / sh), dw = sw * sc, dh = sh * sc;
+    ctx.save();
+    if (mirror) { ctx.translate(w, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(src, (w - dw) / 2, (h - dh) / 2, dw, dh);
+    ctx.restore();
+    return true;
+  }
+
+  // Build the heat values for the current source
+  function lensHeat() {
+    if (L.src === 'sample') {
+      if (!images.signal) return;
+      lensSensor(320, 240);
+      L.sctx.fillStyle = '#000';
+      L.sctx.fillRect(0, 0, L.SW, L.SH);
+      drawCover(L.sctx, images.signal, L.SW, L.SH, false);
+      const d = L.sctx.getImageData(0, 0, L.SW, L.SH).data;
+      for (let i = 0; i < L.vals.length; i++) L.vals[i] = d[i * 4];
+    } else {
+      if (!L.visual) return;
+      lensSensor(160, 120);
+      if (!drawCover(L.sctx, L.visual, L.SW, L.SH, L.mirror)) return;
+      const d = L.sctx.getImageData(0, 0, L.SW, L.SH).data;
+      const skin = ui.skin.checked, inv = ui.invert.checked;
+      for (let i = 0, j = 0; i < L.vals.length; i++, j += 4) {
+        const r = d[j], g = d[j + 1], b = d[j + 2];
+        const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        let v = inv ? 1 - lum : lum;
+        if (skin) {
+          // soft skin-tone score: reddish, not grey, not too dark
+          const s = clamp((r - g - 8) / 40, 0, 1) * clamp((r - b - 12) / 50, 0, 1) * (r > 80 && g > 35 ? 1 : 0);
+          v = v * 0.6 * (1 - s) + (0.72 + 0.24 * lum) * s;
+        }
+        L.vals[i] = v * 255;
+      }
+    }
+    let mx = 0, mn = 255;
+    for (let i = 0; i < L.vals.length; i++) { const v = L.vals[i]; if (v > mx) mx = v; if (v < mn) mn = v; }
+    ui.max.textContent = fmt(lensC(mx / 255)) + '°';
+    ui.min.textContent = fmt(lensC(mn / 255)) + '°';
+  }
+
+  function lensRender() {
+    const c = L.canvas, ctx = L.ctx, W = c.width, H = c.height;
+    if (!W || !H || !L.vals) return;
+    const lo = L.level - L.span / 2, k = 255 / L.span;
+    const d = L.out.data, vals = L.vals;
+    for (let i = 0, j = 0; i < vals.length; i++, j += 4) {
+      const v = (vals[i] / 255 - lo) * k;
+      const q = (v < 0 ? 0 : v > 255 ? 255 : v | 0) * 3;
+      d[j] = LUT[q]; d[j + 1] = LUT[q + 1]; d[j + 2] = LUT[q + 2]; d[j + 3] = 255;
+    }
+    L.sctx.putImageData(L.out, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(L.sensor, 0, 0, W, H);
+
+    const css = getComputedStyle(document.documentElement);
+    const accent = css.getPropertyValue('--accent').trim(), ink = css.getPropertyValue('--ink').trim(), scrim = css.getPropertyValue('--scrim').trim();
+    const dpr = W / L.canvas.clientWidth || 1;
+    const sx = L.split * W, slant = W * 0.12;
+    const visual = L.src === 'sample' ? images.signalOriginal : L.visual;
+    if (visual) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(0, 0); ctx.lineTo(sx + slant, 0); ctx.lineTo(sx - slant, H); ctx.lineTo(0, H);
+      ctx.closePath();
+      ctx.clip();
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, W, H);
+      drawCover(ctx, visual, W, H, L.mirror);
+      ctx.restore();
+    }
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath(); ctx.moveTo(sx + slant, 0); ctx.lineTo(sx - slant, H); ctx.stroke();
+    ctx.fillStyle = accent;
+    ctx.beginPath(); ctx.arc(sx, H / 2, 11 * dpr, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = scrim; ctx.lineWidth = 1.6 * dpr;
+    ctx.beginPath();
+    ctx.moveTo(sx - 3 * dpr, H / 2 - 4 * dpr); ctx.lineTo(sx - 6 * dpr, H / 2); ctx.lineTo(sx - 3 * dpr, H / 2 + 4 * dpr);
+    ctx.moveTo(sx + 3 * dpr, H / 2 - 4 * dpr); ctx.lineTo(sx + 6 * dpr, H / 2); ctx.lineTo(sx + 3 * dpr, H / 2 + 4 * dpr);
+    ctx.stroke();
+
+    ctx.font = `500 ${11 * dpr}px "IBM Plex Mono", ui-monospace, monospace`;
+    ctx.textBaseline = 'middle';
+    const tag = (text, x, y, alignRight) => {
+      const w = ctx.measureText(text).width + 14 * dpr, h = 20 * dpr;
+      const left = alignRight ? x - w : x;
+      ctx.fillStyle = scrim; ctx.fillRect(left, y, w, h);
+      ctx.fillStyle = ink; ctx.fillText(text, left + 7 * dpr, y + h / 2);
+    };
+    tag(L.src === 'sample' ? 'ORIGINAL 原圖配色' : 'VISIBLE 可見光', 10 * dpr, 10 * dpr, false);
+    tag(`THERMAL · ${palName.toUpperCase()}`, W - 10 * dpr, 10 * dpr, true);
+
+    if (L.probe) {
+      const px = L.probe.x * W, py = L.probe.y * H;
+      const v = vals[clamp(Math.floor(L.probe.y * L.SH), 0, L.SH - 1) * L.SW + clamp(Math.floor(L.probe.x * L.SW), 0, L.SW - 1)];
+      const label = fmt(lensC(v / 255));
+      ctx.strokeStyle = ink; ctx.lineWidth = 1 * dpr;
+      ctx.beginPath();
+      ctx.moveTo(px - 18 * dpr, py); ctx.lineTo(px - 5 * dpr, py); ctx.moveTo(px + 5 * dpr, py); ctx.lineTo(px + 18 * dpr, py);
+      ctx.moveTo(px, py - 18 * dpr); ctx.lineTo(px, py - 5 * dpr); ctx.moveTo(px, py + 5 * dpr); ctx.lineTo(px, py + 18 * dpr);
+      ctx.stroke();
+      const right = px > W - 110 * dpr;
+      tag(label + '°C', right ? px - 22 * dpr : px + 22 * dpr, py - 26 * dpr, right);
+      ui.spot.textContent = label + '°';
+    } else {
+      ui.spot.textContent = '—';
+    }
+  }
+
+  function lensResize() {
+    const W = L.canvas.clientWidth, H = L.canvas.clientHeight;
+    if (!W || !H) return;
+    L.canvas.width = Math.round(W * DPR());
+    L.canvas.height = Math.round(H * DPR());
+    L.dirty = true;
+  }
+  function setStatus(text) { L.status.textContent = text; }
+  function setSource(src) {
+    if (src !== 'camera') stopCam();
+    L.src = src;
+    L.mirror = src === 'camera';
+    ui.sample.setAttribute('aria-pressed', String(src === 'sample'));
+    ui.cam.setAttribute('aria-pressed', String(src === 'camera'));
+    ui.upload.classList.toggle('on', src === 'upload');
+    ui.cam.textContent = src === 'camera' ? '關閉相機' : '開啟相機';
+    ui.skin.disabled = ui.invert.disabled = src === 'sample';
+    lensHeat();
+    L.dirty = true;
+  }
+  function stopCam() {
+    if (L.stream) L.stream.getTracks().forEach((t) => t.stop());
+    L.stream = null;
+    L.video.srcObject = null;
+  }
+  async function startCam() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus('這個瀏覽器或頁面環境不提供相機。可以改用「上傳照片」。');
+      return;
+    }
+    setStatus('正在請求相機權限…');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      L.stream = stream;
+      L.video.srcObject = stream;
+      await L.video.play();
+      L.visual = L.video;
+      setSource('camera');
+      setStatus('相機已開啟：膚色區域會被當成熱源，所以臉和手會最亮。');
+    } catch (err) {
+      stopCam();
+      setStatus(err && err.name === 'NotAllowedError'
+        ? '相機權限被拒絕，或目前的頁面環境不允許使用相機。可以改用「上傳照片」，或用 https、localhost 開啟這個網站。'
+        : `無法開啟相機（${err && err.name ? err.name : '未知錯誤'}）。可以改用「上傳照片」。`);
+    }
+  }
+  function loadFile(file) {
+    if (!file || !file.type.startsWith('image/')) { setStatus('請選擇圖片檔（JPG、PNG、WebP 等）。'); return; }
+    const url = URL.createObjectURL(file);
+    loadImage(url).then((im) => {
+      L.visual = im;
+      setSource('upload');
+      setStatus(`已載入「${file.name}」。拖曳斜線比對，調整 LEVEL 和 SPAN 改變對比。`);
+    }).catch(() => setStatus('這張圖片無法讀取，換一張試試。'));
+  }
+
+  ui.sample.addEventListener('click', () => { setSource('sample'); setStatus('目前是 SPC-04 訊號殘影：斜線左側是原圖配色，右側用目前的色盤重新顯像。'); });
+  ui.cam.addEventListener('click', () => {
+    if (L.src === 'camera') { setSource('sample'); setStatus('相機已關閉，回到封面樣本。'); }
+    else startCam();
+  });
+  ui.file.addEventListener('change', () => { loadFile(ui.file.files[0]); ui.file.value = ''; });
+  const syncRanges = () => {
+    L.level = ui.level.value / 100;
+    L.span = ui.span.value / 100;
+    L.split = ui.split.value / 100;
+    ui.levelOut.textContent = fmt(lensC(L.level)) + '°C';
+    ui.spanOut.textContent = (L.span * (LENS_RANGE[1] - LENS_RANGE[0])).toFixed(1) + '°C';
+    ui.splitOut.textContent = ui.split.value + '%';
+    L.dirty = true;
+  };
+  [ui.level, ui.span, ui.split].forEach((el) => el.addEventListener('input', syncRanges));
+  [ui.skin, ui.invert].forEach((el) => el.addEventListener('change', () => { lensHeat(); L.dirty = true; }));
+
+  const lensPoint = (e) => {
+    const r = L.canvas.getBoundingClientRect();
+    return { x: clamp((e.clientX - r.left) / r.width, 0, 1), y: clamp((e.clientY - r.top) / r.height, 0, 1), r };
+  };
+  const lineXAt = (y) => L.split + 0.12 * (1 - 2 * y); // divider x (normalized) at height y
+  L.canvas.addEventListener('pointerdown', (e) => {
+    const p = lensPoint(e);
+    if (Math.abs(p.x - lineXAt(p.y)) * p.r.width < 32) {
+      L.drag = true;
+      L.canvas.setPointerCapture(e.pointerId);
+    }
+    L.probe = { x: p.x, y: p.y };
+    L.dirty = true;
+  });
+  L.canvas.addEventListener('pointermove', (e) => {
+    const p = lensPoint(e);
+    if (L.drag) {
+      L.split = clamp(p.x - 0.12 * (1 - 2 * p.y), 0, 1);
+      ui.split.value = Math.round(L.split * 100);
+      ui.splitOut.textContent = ui.split.value + '%';
+    }
+    L.probe = { x: p.x, y: p.y };
+    L.dirty = true;
+  }, { passive: true });
+  const endDrag = () => { L.drag = false; };
+  L.canvas.addEventListener('pointerup', endDrag);
+  L.canvas.addEventListener('pointercancel', endDrag);
+  L.canvas.addEventListener('pointerleave', () => { if (!L.drag) { L.probe = null; L.dirty = true; } });
+
+  L.view.addEventListener('dragover', (e) => { e.preventDefault(); L.view.classList.add('drag'); ui.drop.hidden = false; });
+  L.view.addEventListener('dragleave', () => { L.view.classList.remove('drag'); ui.drop.hidden = true; });
+  L.view.addEventListener('drop', (e) => {
+    e.preventDefault();
+    L.view.classList.remove('drag'); ui.drop.hidden = true;
+    loadFile(e.dataTransfer.files[0]);
+  });
+  document.addEventListener('paste', (e) => {
+    const item = [...(e.clipboardData ? e.clipboardData.files : [])].find((f) => f.type.startsWith('image/'));
+    if (item) loadFile(item);
+  });
+
+  let camTime = 0;
+  function lensFrame(now) {
+    if (L.visible && L.src === 'camera' && L.video.readyState >= 2 && now - camTime > 33) {
+      camTime = now;
+      lensHeat();
+      L.dirty = true;
+    }
+    if (L.dirty) { L.dirty = false; lensRender(); }
+  }
+
+  /* ---------- wiring ---------- */
+  onPalette.push(() => { specs.forEach(paintSpec); L.dirty = true; });
+
+  let saved = null;
+  try { saved = localStorage.getItem('thermal-palette'); } catch (e) { /* storage unavailable */ }
+  setPalette(PALETTES[saved] ? saved : 'ironbow');
+  syncRanges();
+
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => entries.forEach((en) => {
+      if (en.target === hero) heroVisible = en.isIntersecting;
+      if (en.target === L.view) { L.visible = en.isIntersecting; L.dirty = true; }
+    }));
+    io.observe(hero);
+    io.observe(L.view);
+  } else {
+    L.visible = true;
+  }
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+    if (heroVisible && V) heroFrame(now);
+    lensFrame(now);
+  }
+
+  ready.then(() => {
+    heroLayout();
+    lensResize();
+    setSource('sample');
+    const ro = new ResizeObserver((entries) => entries.forEach((en) => {
+      const s = specs.find((x) => x.view === en.target);
+      if (s) composeSpec(s);
+    }));
+    specs.forEach((s) => ro.observe(s.view));
+    let resizeTimer = 0, lastSize = `${hero.clientWidth}x${hero.clientHeight}`;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        // only rebuild the field when the viewfinder itself changed size
+        const size = `${hero.clientWidth}x${hero.clientHeight}`;
+        if (size !== lastSize) { lastSize = size; heroLayout(); }
+        lensResize();
+      }, 150);
+    });
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { L.dirty = true; });
+    requestAnimationFrame(loop);
+  });
+})();
+</script>
+</body>
+</html>
